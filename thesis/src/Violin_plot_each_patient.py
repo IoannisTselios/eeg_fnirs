@@ -37,7 +37,7 @@ if substract_baseline:
                 baseline_for_this_session = only_baseline_df.loc[(only_baseline_df['drug'] == drug) & (only_baseline_df['id'] == id)].values[0]
                 df.loc[index, df.columns.values[3:]] -= baseline_for_this_session[3:]
             except Exception as e: # Most likely the baseline was not found
-                # print(e)
+                print(e)
                 if use_median_baseline:
                     df.loc[index,df.columns.values[3:]] -= median_baseline
                 else:
@@ -47,6 +47,22 @@ if substract_baseline:
     del only_baseline_df, only_post_one_df, only_post_two_df
         
 df = df.dropna()
+
+# df_baseline = only_baseline_df.copy().drop(columns=["time"])  # Keep only id, drug, and features
+# df_baseline = df_baseline.rename(columns=lambda x: x if x in ["id", "drug"] else f"{x}_baseline")
+
+# df_post = pd.concat([only_post_one_df, only_post_two_df])  # Combine post-administration data
+# df_post = df_post.merge(df_baseline, on=["id", "drug"], how="left")  # Merge on 'id' and 'drug'
+
+# # Subtract baseline where available, otherwise use median baseline or NaN
+# feature_cols = [col for col in df.columns if col not in ["id", "drug", "time"]]
+
+# for feature in feature_cols:
+#     df_post[feature] = df_post[feature] - df_post[f"{feature}_baseline"]
+
+# # Drop baseline columns
+# df_post = df_post.drop(columns=[f"{feature}_baseline" for feature in feature_cols])
+# df_post = df_post.dropna()  # Remove NaN values
 print("Number of data points: {}".format(len(df)))
 
 # ---- [Data preparation] Normalize features ----
@@ -61,7 +77,6 @@ if normalize:
         df[feature] = ss.fit_transform(df[feature].values.reshape(-1, 1))
 
 df.to_csv(os.path.join("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\feature_extraction_files\\lmm_Processed_data.csv"), index=False)
-# df.to_excel(os.path.join("data", "processed", "lmm_data.xlsx"), index=False)
 
 # ---- Visualizations ----
 
@@ -82,3 +97,42 @@ if violin_plots:
         plt.ylabel(ylabels[feature])
         plt.xlabel("Drug group")
         plt.savefig(r"L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\" + feature + ".png")
+
+
+violin_plots_individual = False
+if violin_plots_individual:
+    output_dir = r"L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\By Patient"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Define custom labels for better readability
+    ylabels = {
+        'delta': 'Percentage of the total signal\'s power spectral density',
+        'theta': 'Percentage of the total signal\'s power spectral density',
+        'alpha': 'Percentage of the total signal\'s power spectral density',
+        'ratio': 'Alpha/Delta Ratio',
+        'pe': 'Permutation entropy',
+        'se': 'Spectral entropy',
+        'fnirs_1': 'Average slope of the hemoglobin signal',
+        'pupillometry_score': 'Pupil dilation count during mental tasks'
+    }
+
+    # Generate violin plots for each patient and feature
+    for patient_id in df['id'].unique():  # Iterate over unique patients
+        df_patient = df[df['id'] == patient_id]  # Filter data for the specific patient
+
+        for feature in df.columns:
+            if feature in ['id', 'drug', 'time']:  # Skip categorical columns
+                continue
+
+            plt.figure(figsize=(8, 6))
+            sns.violinplot(data=df_patient, x="drug", y=feature, hue="time", palette='pastel')
+            plt.title(f"Patient {patient_id} - {feature} Distribution")
+            plt.ylabel(ylabels.get(feature, feature))  # Use label if available
+            plt.xlabel("Drug group")
+            
+            # Save plot for each patient-feature combination
+            save_path = os.path.join(output_dir, f"Patient_{patient_id}_{feature}.png")
+            plt.savefig(save_path)
+            plt.close()  # Close plot to avoid memory issues
+
+    print("Violin plots saved in:", output_dir)

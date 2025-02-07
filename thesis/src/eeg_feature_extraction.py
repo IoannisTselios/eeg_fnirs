@@ -26,14 +26,14 @@ def bandpower_mne(epochs_data, sf, bands, ch_names=None, relative=True):
         # Loop over each channel
         for channel_data in epochs_data:
             # Compute the bandpower for this channel
-            band_power.append(bandpower(channel_data, sf, [low, high], window_sec=None, relative=relative))
+            band_power.append(bandpower(channel_data, sf, [low, high], window_sec=None, relative=True))
 
         # Store the average power for the band
         bandpower_dict[label] = np.mean(band_power)
 
     return bandpower_dict
 
-def bandpower(data, sf, band, window_sec=None, relative=False):
+def bandpower(data, sf, band, window_sec=None, relative=True):
     """Compute the average power of the signal in a specific frequency band using Welch's method.
 
     Parameters
@@ -70,7 +70,6 @@ def bandpower(data, sf, band, window_sec=None, relative=False):
 
     nperseg = int(window_sec * float(sf))  # Ensure correct type
 
-
     # Compute the periodogram (Welch method)
     freqs, psd = welch(data, sf, nperseg=nperseg)
 
@@ -86,6 +85,7 @@ def bandpower(data, sf, band, window_sec=None, relative=False):
     # If relative power is requested, normalize by total power
     if relative:
         total_power = np.trapezoid(psd, dx=freq_res)
+        # print(total_power)
         bp /= total_power
 
     return bp

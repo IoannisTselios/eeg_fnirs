@@ -30,8 +30,7 @@ def get_raw_from_xdf(xdf_file_path: str, ref_electrode: str = "") -> mne.io.Raw:
         If not empty, a referential montage with that electrode is used, otherwise an average montage is used.
     """
     streams, _ = pyxdf.load_xdf(xdf_file_path)
-    dfas = pd.DataFrame(streams[1]["time_series"])
-    dfas.to_csv("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\temp2.csv")
+    
     # Find where the EEG data is located within the data structure
     assert len(streams) == 2, (
         "Unexpected XDF data structure : expecting 2 streams, got " + str(len(streams))

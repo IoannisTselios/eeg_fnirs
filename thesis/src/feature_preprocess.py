@@ -29,17 +29,17 @@ def quantile_bucket(data, buckets):
 
 # ---- Load ----
 
-df_eeg = pd.read_csv(os.path.join("data", "processed", "eeg_features copy relative.csv"))
-df_fnirs = pd.read_csv(os.path.join("data", "processed", "fnirs_features copy.csv"))
-df_pupillometry = pd.read_csv(os.path.join("data", "processed", "pupillometry_features.csv"))
+df = pd.read_csv(os.path.join("data", "processed", "eeg_features copy relative.csv"))
+# df_fnirs = pd.read_csv(os.path.join("data", "processed", "fnirs_features copy.csv"))
+# df_pupillometry = pd.read_csv(os.path.join("data", "processed", "pupillometry_features.csv"))
 
 # ---- Merge ----
 
-df_eeg.id.astype('Int64')
-df_fnirs.id.astype('Int64')
-df_pupillometry.id.astype('Int64')
-df = pd.merge(left=df_eeg, right=df_pupillometry, left_on=['id', 'drug', 'time'], right_on=['id', 'drug', 'time'])
-df = pd.merge(left=df, right=df_fnirs, left_on=['id', 'drug', 'time'], right_on=['id', 'drug', 'time'])
+# df_eeg.id.astype('Int64')
+# df_fnirs.id.astype('Int64')
+# df_pupillometry.id.astype('Int64')
+# df = pd.merge(left=df_eeg, right=df_pupillometry, left_on=['id', 'drug', 'time'], right_on=['id', 'drug', 'time'])
+# df = pd.merge(left=df, right=df_fnirs, left_on=['id', 'drug', 'time'], right_on=['id', 'drug', 'time'])
 del df_eeg, df_pupillometry, df_fnirs
 
 # ---- [Data preparation] Substract baseline from corresponding post administration 1 and 2 ----
