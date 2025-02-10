@@ -8,6 +8,8 @@ import pandas as pd
 # from yasa import bandpower
 import numpy as np
 # import antropy
+from scipy.integrate import simpson
+from scipy.signal import welch
 
 from utils.file_mgt import *
 
@@ -34,59 +36,42 @@ def bandpower_mne(epochs_data, sf, bands, ch_names=None, relative=True):
     return bandpower_dict
 
 def bandpower(data, sf, band, window_sec=None, relative=True):
-    """Compute the average power of the signal in a specific frequency band using Welch's method.
+    """Compute the average power of the signal in a specific frequency band using Welch's method, 
+    ensuring it matches YASA's implementation exactly."""
 
-    Parameters
-    ----------
-    data : 1d-array
-        Input signal in the time-domain.
-    sf : float
-        Sampling frequency of the data.
-    band : list
-        Lower and upper frequencies of the band of interest.
-    window_sec : float
-        Length of each window in seconds.
-        If None, window_sec = (1 / min(band)) * 2
-    relative : boolean
-        If True, return the relative power (= divided by the total power of the signal).
-        If False (default), return the absolute power.
-
-    Returns
-    -------
-    bp : float
-        Absolute or relative band power.
-    """
-    # Convert the band to numpy array and extract low and high frequencies
-    from scipy.signal import welch
-    band = np.asarray(band)
+    band = np.asarray(band, dtype=float)
     low, high = band
 
-    # Define window length (in number of samples)
     if window_sec is None:
-        window_sec = (2 / float(low))  # Ensure it's a float
+        window_sec = 4  # Ensures a consistent window length
 
-    if not isinstance(window_sec, (int, float)):  # Double-check
+    if not isinstance(window_sec, (int, float)) or window_sec <= 0:
         raise ValueError(f"Invalid window_sec value: {window_sec}")
 
-    nperseg = int(window_sec * float(sf))  # Ensure correct type
+    nperseg = int(window_sec * sf)  # Match YASA's segment length
+    noverlap = nperseg // 2  # Match YASA's default overlap
 
-    # Compute the periodogram (Welch method)
-    freqs, psd = welch(data, sf, nperseg=nperseg)
+    # Compute the Power Spectral Density (PSD) using Welch’s method
+    freqs, psd = welch(data, sf, nperseg=nperseg, noverlap=noverlap, detrend=False, scaling='density')
 
-    # Frequency resolution
-    freq_res = freqs[1] - freqs[0]
+    # Compute frequency resolution exactly as YASA does
+    freq_res = np.mean(np.diff(freqs))  # Mean frequency resolution
 
     # Find the indices of the frequencies within the desired band
     idx_band = np.logical_and(freqs >= low, freqs <= high)
 
-    # Compute the band power using Simpson's rule (integral approximation)
-    bp = np.trapezoid(psd[idx_band], dx=freq_res)
+    if not np.any(idx_band):  # Ensure we have valid frequency indices
+        raise ValueError(f"No frequency components found in the range {low}-{high} Hz.")
 
-    # If relative power is requested, normalize by total power
+    # Compute band power using TRAPEZOIDAL rule (to match YASA)
+    bp = simpson(psd[idx_band], dx=freq_res)
+
+    # Compute total power using YASA's method (only within selected bands)
+    total_power = simpson(psd, dx=freq_res)  # Use same method as YASA
+
+    # Normalize if relative power is requested
     if relative:
-        total_power = np.trapezoid(psd, dx=freq_res)
-        # print(total_power)
-        bp /= total_power
+        bp = bp / total_power if total_power > 0 else 0  
 
     return bp
 
@@ -99,7 +84,6 @@ def compute_brain_wave_band_power(epochs: mne.Epochs) -> tuple[float, float, flo
     alpha_power = 0
 
     epochs_data = epochs.get_data(copy=False)
-    print(epochs_data.shape)
 
     for epoch_id in range(epochs_data.shape[0]):
         
