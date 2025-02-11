@@ -61,7 +61,7 @@ def individual_violin_plots(df, ylabels):
 
 def outliers_plots(df, ylabels, top_patients):
     # Define an output folder for individual patients
-    output_dir_outliers = os.path.join("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\", "outliers")
+    output_dir_outliers = os.path.join("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\", "outliers")
     os.makedirs(output_dir_outliers, exist_ok=True)
 
     for feature in df.columns:
@@ -87,6 +87,106 @@ def outliers_plots(df, ylabels, top_patients):
         plt.close()
 
     print("Outlier patient violin plots saved in:", output_dir_outliers)
+
+
+def plot_all_outlier_patients(df, outlier_details_df, ylabels, name_prefix="outliers_analysis", use_log_scale=False):
+    """
+    Generates detailed plots for ALL patients identified as outliers.
+    - Each patient gets a dedicated plot with all features.
+    - Outlier values are highlighted in red.
+    - Time-series trends are emphasized.
+    - Boxplots are added to compare distributions over time.
+    - Optionally applies log scaling to better visualize variations.
+
+    Parameters:
+    - df: Processed DataFrame
+    - outlier_details_df: DataFrame containing detected outliers
+    - ylabels: Dictionary mapping feature names to labels
+    - name_prefix: Prefix for saved plots.
+    - use_log_scale: Whether to apply log scaling to y-axis.
+    """
+
+    # Define output directory
+    output_dir = r"L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\All_Outlier_Patients"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Automatically get all unique outlier patients from outlier_details_df
+    outlier_patients = outlier_details_df['id'].unique()
+
+    # Set a color palette for different patients
+    patient_colors = sns.color_palette("tab10", len(outlier_patients))
+    patient_color_map = {pid: color for pid, color in zip(outlier_patients, patient_colors)}
+
+    # ---- Generate detailed time-series & boxplots for each outlier patient ----
+    for patient_id in outlier_patients:
+        df_patient = df[df['id'] == patient_id].copy()
+        df_outlier_patient = outlier_details_df[outlier_details_df['id'] == patient_id].copy()
+
+        # Debug: Print patient data to confirm it exists
+        if df_patient.empty:
+            print(f"⚠️ Warning: No data found for Patient {patient_id}")
+            continue
+
+        # Convert time to integer (if it's not already)
+        df_patient["time"] = df_patient["time"].astype(int)
+        df_outlier_patient["time"] = df_outlier_patient["time"].astype(int)
+
+        # Set up subplots (time series & boxplot for each feature)
+        num_features = len(ylabels.keys())
+        fig, axes = plt.subplots(num_features, 2, figsize=(18, num_features * 4), sharex=True)
+
+        if num_features == 1:  # If only one feature, axes is not a list
+            axes = np.array([axes])  # Convert to 2D array for consistency
+
+        for i, feature in enumerate(ylabels.keys()):
+            ax_ts, ax_box = axes[i]
+
+            # ---- Time Series Plot ----
+            ax_ts.plot(df_patient['time'], df_patient[feature], marker='o', linestyle='dashed',
+                       markersize=6, alpha=0.7, color=patient_color_map[patient_id], label=f"Patient {patient_id}")
+
+            # Highlight outliers in red
+            outlier_points = df_outlier_patient[df_outlier_patient["Feature"] == feature]
+            if not outlier_points.empty:
+                ax_ts.scatter(outlier_points["time"], outlier_points[feature], color="red", s=80, label="Outlier")
+
+                # Annotate the values of the outliers
+                for _, row in outlier_points.iterrows():
+                    ax_ts.annotate(f"{row[feature]:.2f}", (row["time"], row[feature]), textcoords="offset points",
+                                   xytext=(5,5), ha='center', fontsize=10, color="red")
+
+            # Labels and formatting
+            ax_ts.set_ylabel(ylabels[feature])
+            ax_ts.set_title(f"Patient {patient_id} - {feature} Over Time")
+            ax_ts.grid(True)
+
+            # Apply log scale if needed
+            if use_log_scale:
+                ax_ts.set_yscale("log")
+
+            # ---- Boxplot for Feature Distribution Over Time ----
+            sns.boxplot(data=df, x="time", y=feature, ax=ax_box, palette="pastel")
+            sns.stripplot(data=df_patient, x="time", y=feature, ax=ax_box, color=patient_color_map[patient_id], size=8, jitter=True)
+
+            # Highlight outliers in red on the boxplot
+            sns.stripplot(data=df_outlier_patient, x="time", y=feature, ax=ax_box, color="red", size=8, jitter=True, label="Outliers")
+
+            # Labels and formatting for boxplot
+            ax_box.set_ylabel(ylabels[feature])
+            ax_box.set_title(f"Feature Distribution Over Time - {feature}")
+            ax_box.grid(True)
+
+        # Shared x-axis formatting
+        axes[-1, 0].set_xlabel("Time")  # Bottom left subplot for Time Series
+        axes[-1, 1].set_xlabel("Time")  # Bottom right subplot for Boxplot
+        plt.xticks(sorted(df_patient["time"].unique()), rotation=45)
+
+        # Improve layout and save
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"Outlier_Patient_{patient_id}_{name_prefix}.png"))
+        plt.close()
+
+    print(f"📊 All outlier patient plots saved in: {output_dir}")
 
 
 def remove_outliers_iqr(df, features):
@@ -137,36 +237,55 @@ def remove_outliers_iqr(df, features):
 
 # ---- Load ----
 
+import pandas as pd
+import numpy as np
+import os
+
+# Load dataset
 df = pd.read_csv(os.path.join("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\feature_extraction_files\\eeg_features.csv"))
 
-# ---- [Data preparation] Substract baseline from corresponding post administration 1 and 2 ----
+# ---- [Data preparation] Compute log(post) - log(baseline) ----
 
-use_median_baseline = False
+use_median_baseline = False  # Toggle to use median baseline
 
+# Separate the dataset by time points
 only_baseline_df = df[df['time'] == 0].copy()
 only_post_one_df = df[df['time'] == 1].copy()
 only_post_two_df = df[df['time'] == 2].copy()
-del df
+del df  # Free memory
 
-median_baseline = only_baseline_df.iloc[:, 3:].median().values if use_median_baseline else None
+# Compute log(median baseline) if applicable (adding 1e-10 to avoid log(0))
+median_baseline = np.log(np.array(only_baseline_df.iloc[:, 3:].median().values, dtype=np.float64) + 1e-10) if use_median_baseline else None
 
-for df_part  in [only_post_one_df, only_post_two_df]:
+# Apply log-based transformation
+for df_part in [only_post_one_df, only_post_two_df]:
 
     for index, row in df_part.iterrows():
         patient_id = row['id']
         drug = row['drug']
 
+        # Find corresponding baseline session
         baseline_session = only_baseline_df[(only_baseline_df['drug'] == drug) & (only_baseline_df['id'] == patient_id)]
 
         if not baseline_session.empty:
-            baseline_values = baseline_session.iloc[0, 3:].values  # Extract baseline
-            df_part.loc[index, df_part.columns.values[3:]] -= baseline_values
+            baseline_values = np.array(baseline_session.iloc[0, 3:], dtype=np.float64)  # Convert explicitly to array
+            post_values = np.array(row.iloc[3:], dtype=np.float64)  # Convert explicitly to array
+            
+            log_baseline = np.log(baseline_values + 1e-10)  # Log transform baseline
+            log_post = np.log(post_values + 1e-10)  # Log transform post values
+
+            df_part.loc[index, df_part.columns.values[3:]] = log_post - log_baseline  # Log difference
         elif median_baseline is not None:
-            df_part.loc[index, df_part.columns.values[3:]] -= median_baseline
+            post_values = np.array(row.iloc[3:], dtype=np.float64)  # Convert explicitly to array
+            log_post = np.log(post_values + 1e-10)  # Log transform post values
+            df_part.loc[index, df_part.columns.values[3:]] = log_post - median_baseline
         else:
             df_part.loc[index, df_part.columns.values[3:]] = np.nan  # If no baseline, set NaN
 
+# Combine processed data
 df = pd.concat([only_post_one_df, only_post_two_df])
+
+# Clean up memory
 del only_baseline_df, only_post_one_df, only_post_two_df
         
 df = df.fillna(0)
@@ -179,21 +298,6 @@ ylabels = {
     'ratio': 'Alpha/Delta Ratio',
 }
 
-# df_baseline = only_baseline_df.copy().drop(columns=["time"])  # Keep only id, drug, and features
-# df_baseline = df_baseline.rename(columns=lambda x: x if x in ["id", "drug"] else f"{x}_baseline")
-
-# df_post = pd.concat([only_post_one_df, only_post_two_df])  # Combine post-administration data
-# df_post = df_post.merge(df_baseline, on=["id", "drug"], how="left")  # Merge on 'id' and 'drug'
-
-# # Subtract baseline where available, otherwise use median baseline or NaN
-# feature_cols = [col for col in df.columns if col not in ["id", "drug", "time"]]
-
-# for feature in feature_cols:
-#     df_post[feature] = df_post[feature] - df_post[f"{feature}_baseline"]
-
-# # Drop baseline columns
-# df_post = df_post.drop(columns=[f"{feature}_baseline" for feature in feature_cols])
-# df_post = df_post.dropna()  # Remove NaN values
 print("Number of data points: {}".format(len(df)))
 
 
@@ -220,13 +324,14 @@ df_no_outliers = df[~df["id"].isin(outlier_patients)]
 general_violin_plots(df_no_outliers, ylabels, "After_the_most_extreme_value")
 
 df_no_outliers, outlier_stats, outlier_details_df = remove_outliers_iqr(df, df.columns)
+outlier_details_df.to_csv("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\feature_extraction_files\\eeg_outliers_detail_df.csv")
 
 # Display how many outliers were removed per feature
-print("Outliers removed per feature:")
-for feature, count in outlier_stats.items():
-    print(f"Feature: {feature}, Outliers Removed: {count}")
+# print("Outliers removed per feature:")
+# for feature, count in outlier_stats.items():
+    # print(f"Feature: {feature}, Outliers Removed: {count}")
 
-print(outlier_details_df.head())
+# print(outlier_details_df.head())
 
 # Show all removed outliers
 print("Outliers Details:")
@@ -237,4 +342,7 @@ patient_outlier_counts = outlier_details_df['id'].value_counts()
 print(patient_outlier_counts)
 
 general_violin_plots(df_no_outliers, ylabels, "After_removing_multiple_values")
+
+plot_all_outlier_patients(df, outlier_details_df, ylabels, "Deep_Dive_All", use_log_scale=False)
+
 

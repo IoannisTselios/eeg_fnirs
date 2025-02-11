@@ -18,7 +18,7 @@ from utils.file_mgt import *
 Extracts features and saves them in a .csv file.
 """
 
-def bandpower_mne(epochs_data, sf, bands, ch_names=None, relative=True):
+def bandpower_mne(epochs_data, sf, bands, ch_names=None):
     bandpower_dict = {}
 
     # Loop over the frequency bands and compute the bandpower for each band
@@ -28,14 +28,14 @@ def bandpower_mne(epochs_data, sf, bands, ch_names=None, relative=True):
         # Loop over each channel
         for channel_data in epochs_data:
             # Compute the bandpower for this channel
-            band_power.append(bandpower(channel_data, sf, [low, high], window_sec=None, relative=True))
+            band_power.append(bandpower(channel_data, sf, [low, high], window_sec=None))
 
         # Store the average power for the band
         bandpower_dict[label] = np.mean(band_power)
 
     return bandpower_dict
 
-def bandpower(data, sf, band, window_sec=None, relative=True):
+def bandpower(data, sf, band, window_sec=None):
     """Compute the average power of the signal in a specific frequency band using Welch's method, 
     ensuring it matches YASA's implementation exactly."""
 
@@ -66,13 +66,6 @@ def bandpower(data, sf, band, window_sec=None, relative=True):
     # Compute band power using TRAPEZOIDAL rule (to match YASA)
     bp = simpson(psd[idx_band], dx=freq_res)
 
-    # Compute total power using YASA's method (only within selected bands)
-    total_power = simpson(psd, dx=freq_res)  # Use same method as YASA
-
-    # Normalize if relative power is requested
-    if relative:
-        bp = bp / total_power if total_power > 0 else 0  
-
     return bp
 
 def compute_brain_wave_band_power(epochs: mne.Epochs) -> tuple[float, float, float]:
@@ -90,8 +83,7 @@ def compute_brain_wave_band_power(epochs: mne.Epochs) -> tuple[float, float, flo
         df = bandpower_mne(epochs_data[epoch_id] * 1e6,
                         sf = float(epochs._raw_sfreq[0]),
                         bands = [(0.5, 4, "Delta"), (4, 8, "Theta"), (8, 13, "Alpha")],
-                        ch_names = epochs.ch_names,
-                        relative = True 
+                        ch_names = epochs.ch_names
                         )
 
         delta_power += np.mean(df['Delta'])
