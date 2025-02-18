@@ -128,7 +128,7 @@ def main():
     logging.basicConfig(force=True, format='%(levelname)s - %(name)s - %(message)s', level=logging.INFO)
 
     paths = list()
-    paths = get_random_eeg_file_paths("fif", 500)
+    paths = get_random_eeg_file_paths("fif", 5000)
 
     feature_list = []
 

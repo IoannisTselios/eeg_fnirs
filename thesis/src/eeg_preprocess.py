@@ -1,24 +1,18 @@
 import logging
 import time
-
 import numpy as np
 import mne
-from mne import Annotations
 import pyxdf
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from autoreject import get_rejection_threshold
 from pyprep import NoisyChannels
-import pandas as pd
-
-from utils.file_mgt import *
-
-
-"""Loads and clean EEG data from .xdf file.
-Clean data is saved as .fif file.
-"""
+from mne.preprocessing import ICA
+from utils.file_mgt import get_random_eeg_file_paths
+from mne import Annotations
 
 
+# ---- Function to Get Raw EEG Data from XDF ----
 def get_raw_from_xdf(xdf_file_path: str, ref_electrode: str = "") -> mne.io.Raw:
     """This function loads an XDF EEG file, and returns the corresponding mne.io.Raw object.
 
@@ -30,7 +24,7 @@ def get_raw_from_xdf(xdf_file_path: str, ref_electrode: str = "") -> mne.io.Raw:
         If not empty, a referential montage with that electrode is used, otherwise an average montage is used.
     """
     streams, _ = pyxdf.load_xdf(xdf_file_path)
-    
+
     # Find where the EEG data is located within the data structure
     assert len(streams) == 2, (
         "Unexpected XDF data structure : expecting 2 streams, got " + str(len(streams))
@@ -115,122 +109,139 @@ def get_raw_from_xdf(xdf_file_path: str, ref_electrode: str = "") -> mne.io.Raw:
     return raw
 
 
-def filter_raw(raw: mne.io.Raw) -> None:
-    """Filters a mne.io.Raw object : bandpass filter between 1 and 70 Hz, and notch filter at 50 Hz."""
-    raw.filter(l_freq=1, h_freq=70, verbose=False)
-    raw.notch_filter(50, verbose=False) # TODO : Remove this line if it turns out we can low pass at less than 50Hz
-    return
+# ---- Function to Apply Filtering and Handle Spikes ----
+def filter_and_handle_spikes(raw: mne.io.Raw, spike_threshold=200e-6, filter_threshold=100e-6, max_consecutive_spikes=5):
+    """Filters EEG data and removes/reduces sudden spikes."""
+    
+    print("🔄 Applying bandpass filter (1-40 Hz)...")
+    raw.filter(l_freq=1, h_freq=40, verbose=False)
+
+    print("🔄 Applying notch filter (50 Hz)...")
+    raw.notch_filter(50, verbose=False)
+
+    # Get EEG data
+    raw_data = raw.get_data()
+    peak_values = np.max(np.abs(raw_data), axis=1)
+
+    # Identify extreme and moderate channels
+    extreme_channels = np.where(peak_values > spike_threshold)[0]
+    moderate_channels = np.where((peak_values > filter_threshold) & (peak_values < spike_threshold))[0]
+
+    # Process extreme spikes: Interpolation or removal
+    for ch_idx in extreme_channels:
+        channel_data = raw_data[ch_idx]
+        spike_indices = np.where(np.abs(channel_data) > spike_threshold)[0]
+
+        if len(spike_indices) > 0:
+            print(f"🚨 Handling spikes in channel: {raw.ch_names[ch_idx]} ({len(spike_indices)} occurrences)")
+            spike_groups = np.split(spike_indices, np.where(np.diff(spike_indices) > 1)[0] + 1)
+
+            for group in spike_groups:
+                if len(group) > max_consecutive_spikes:
+                    print(f"❌ Removing segment in channel {raw.ch_names[ch_idx]} (Too many consecutive spikes: {len(group)})")
+                    channel_data[group] = np.nan
+                else:
+                    for spike_idx in group:
+                        if spike_idx > 1 and spike_idx < len(channel_data) - 2:
+                            channel_data[spike_idx] = np.median(channel_data[max(0, spike_idx-2):min(len(channel_data), spike_idx+3)])
+                        else:
+                            channel_data[spike_idx] = np.nan
+
+            nan_indices = np.where(np.isnan(channel_data))[0]
+            if len(nan_indices) > 0:
+                print(f"🔄 Interpolating {len(nan_indices)} missing values in {raw.ch_names[ch_idx]}")
+                valid_indices = np.where(~np.isnan(channel_data))[0]
+                if len(valid_indices) > 0:
+                    channel_data[nan_indices] = np.interp(nan_indices, valid_indices, channel_data[valid_indices])
+
+    # Process moderate spikes: Apply additional filtering
+    if len(moderate_channels) > 0:
+        affected_moderate_channels = [raw.ch_names[i] for i in moderate_channels]
+        print(f"⚠️ Applying additional filtering for moderate spikes in channels: {affected_moderate_channels}")
+        raw.filter(l_freq=1, h_freq=30, picks=affected_moderate_channels, verbose=False)
+
+    raw._data[:] = raw_data  # Update raw object
+    print("✅ Spikes removed, data cleaned and interpolated.")
+    return raw
 
 
-def epochs_from_raw(raw: mne.io.Raw) -> mne.Epochs:
-    """
-    Returns a mne.Epochs object created from an annotated mne.io.Raw object.
-    The length of the epochs is arbitrarily set, based on how the data was acquired.
-    """
-    events, events_id = mne.events_from_annotations(raw)
-    return mne.Epochs(
-        raw, events, event_id=events_id, preload=True, tmin=-10, tmax=25, baseline=(None, 0)
+# ---- Epoch Creation ----
+def create_epochs(raw: mne.io.Raw):
+    """Creates epochs from raw EEG data while ensuring valid events."""
+    events, event_id = mne.events_from_annotations(raw)
+
+    if len(events) == 0:
+        print("❌ No valid EEG events found! Skipping epoch creation.")
+        return None  
+
+    # Define rejection criteria (increase threshold for fewer rejections)
+    reject_criteria = dict(eeg=500e-6)
+
+    epochs = mne.Epochs(
+        raw, events, event_id=event_id, preload=True, tmin=-10, tmax=25, baseline=(None, 0), reject=reject_criteria
     )
 
-
-def add_brain_wave_types_lines_on_pyplot_figure():
-    """To be called after : fig = spectrum.plot()"""
-    plt.axvline(x=0, color="b")
-    # Delta
-    plt.axvline(x=4, color="b")
-    # Theta
-    plt.axvline(x=8, color="b")
-    # Alpha
-    plt.axvline(x=13, color="b")
-    # Beta
-    plt.axvline(x=30, color="b")
-    # Gamma
+    return epochs
 
 
+# ---- Main Function ----
 def main():
-
-    logging.basicConfig(force=True, format='%(levelname)s - %(name)s - %(message)s')
-    # mne.set_config("MNE_BROWSER_BACKEND", "qt")
+    logging.basicConfig(force=True, format="%(levelname)s - %(name)s - %(message)s")
     mne.set_log_level("WARNING")
 
-    paths = list()
-    paths = get_random_eeg_file_paths("xdf", 500)
-    # paths = get_random_eeg_file_paths_one_session("xdf")
-    # paths.append(r"data\raw\DRUG1\ID33\Baseline\sub-P001_ses-S001_task-Default_run-001_eeg_old387.xdf")
-
-    stats = {"bad_channels":[], "bad_epochs":[], "successes":0}
+    paths = get_random_eeg_file_paths("xdf", 5000)
+    stats = {"bad_channels": [], "bad_epochs": [], "successes": 0}
 
     for path in tqdm(paths):
-
-        # ---- Raw ----
-
         try:
             raw = get_raw_from_xdf(path).load_data()
         except Exception as e:
-            logging.error(e)
+            logging.error(f"❌ Failed to load {path}: {e}")
             continue
 
         # ---- Bad channels ---- 
-
         handler = NoisyChannels(raw)
-        handler.find_bad_by_deviation() # high/low overall amplitudes
-        handler.find_bad_by_hfnoise() # high-frequency noise
+        handler.find_bad_by_deviation()  # Detects high/low amplitude noise
+        handler.find_bad_by_hfnoise()    # Detects high-frequency noise
         bad_channels = handler.get_bads()
-        logging.info("Bad channels found by pyprep ({}) : {}".format(len(bad_channels), bad_channels))
-        stats["bad_channels"].append(len(bad_channels))
-        raw.info["bads"] = bad_channels
-        if len(bad_channels) > 0 :
-            raw.interpolate_bads()
-            raw = raw.set_eeg_reference(ref_channels="average")
+        logging.info(f"Bad channels found: {bad_channels}")
 
-        # ---- Filtering ----
+        if bad_channels:
+            raw.info["bads"] = bad_channels
 
-        filter_raw(raw)
-        # raw.plot(block=True)
+            # ✅ Check for NaN before interpolation
+            if not np.any(np.isnan(raw.get_data())):
+                raw.interpolate_bads()
+                raw.set_eeg_reference(ref_channels="average")
+            else:
+                logging.warning("⚠️ Skipping interpolation due to NaN values in raw data.")
 
-        # ---- Epoch ----
 
-        epochs = epochs_from_raw(raw).load_data()
-        del raw
+        # Plot BEFORE cleaning
+        raw.plot(block=True)
 
-        # ---- Bad epochs ----
-
-        # ar = autoreject.AutoReject(n_interpolate=[1, 2, 3, 4], n_jobs=1, verbose=False)
-        # ar.fit(epochs)
-        # epochs = ar.transform(epochs)
-        event_count = len(epochs.selection)
-        reject = get_rejection_threshold(epochs, verbose=False)
-        epochs.drop_bad(reject=reject)
-        logging.info("{} epoch(s) were dropped by Autoreject".format(event_count - len(epochs.selection)))
-        stats["bad_epochs"].append(event_count - len(epochs.selection))
-        if (
-            # set(epochs.selection).intersection([0, 1, 2]) == set() or # we won't use the passive paradigm
-            set(epochs.selection).intersection([3, 4, 5, 6, 7]) == set() or
-            set(epochs.selection).intersection([8, 9, 10, 11, 12]) == set()
-        ):
-            logging.warning("All epochs for one or more event type were dropped. Skipping to next recording.")
+        # Apply filtering and handle spikes
+        raw_new = filter_and_handle_spikes(raw)
+        if raw_new is None:
             continue
 
-        # ---- Save as file ----
+        raw._data = raw.get_data()
+        
+        raw_new.plot(block=True)
+        # Create epochs
+        epochs = create_epochs(raw_new)
+        if epochs is None or len(epochs.selection) == 0:
+            logging.warning(f"⚠️ All epochs removed for {path}. Skipping...")
+            continue
 
-        file_name = "\\".join(str(path).split("\\")[:-1]) + "\\clean-epo.fif" # Same path, different file name
-        epochs.save(file_name, overwrite=True)
+        # Save Cleaned Data
+        fif_file_path = str(path).replace(".xdf", "_clean-epo.fif")
+        epochs.save(fif_file_path, overwrite=True)
         stats["successes"] += 1
 
-    logging.info("Number of successfully cleaned recordings: {} ({}%)".format(stats["successes"], (stats["successes"]/len(paths)*100)))
-
-    number = len([e for e in stats["bad_channels"] if e > 0])
-    average = np.mean(np.array(stats["bad_channels"]))
-    logging.info("Number of recordings with bad channels: {}".format(number))
-    logging.info("Average number of bad channels (for all recordings): {}".format(average))
-
-    number = len([e for e in stats["bad_epochs"] if e > 0])
-    average = np.mean(np.array(stats["bad_epochs"]))
-    logging.info("Number of recordings with bad epochs: {}".format(number))
-    logging.info("Average number of bad epochs (for all recordings): {}".format(average))
-
+    logging.info(f"✅ Successfully cleaned {stats['successes']} files.")
 
 if __name__ == "__main__":
-    t = time.time()
+    t_start = time.time()
     main()
-    logging.info("Script run in {} s".format(time.time() - t))
+    logging.info(f"🏁 Script completed in {time.time() - t_start:.2f} seconds.")
