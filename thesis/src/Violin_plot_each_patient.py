@@ -31,7 +31,7 @@ def general_violin_plots(df, ylabels, name):
         plt.title("Distribution of the values for the feature: {}".format(feature))
         plt.ylabel(ylabels[feature])
         plt.xlabel("Drug group")
-        plt.savefig(r"L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\" + feature + "_" + name +".png")
+        plt.savefig(r"L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\" + feature + "_" + name + "_first_change_on_preprocessing" + ".png")
 
 
 def individual_violin_plots(df, ylabels):
@@ -107,7 +107,7 @@ def plot_all_outlier_patients(df, outlier_details_df, ylabels, name_prefix="outl
     """
 
     # Define output directory
-    output_dir = r"L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\All_Outlier_Patients"
+    output_dir = r"L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\All_Outlier_Patients_first_change_on_preprocessing"
     os.makedirs(output_dir, exist_ok=True)
 
     # Automatically get all unique outlier patients from outlier_details_df
@@ -324,7 +324,7 @@ df_no_outliers = df[~df["id"].isin(outlier_patients)]
 general_violin_plots(df_no_outliers, ylabels, "After_the_most_extreme_value")
 
 df_no_outliers, outlier_stats, outlier_details_df = remove_outliers_iqr(df, df.columns)
-outlier_details_df.to_csv("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\feature_extraction_files\\eeg_outliers_detail_df.csv")
+outlier_details_df.to_csv("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\feature_extraction_files\\eeg_outliers_detail_df_first_change_on_preprocessing.csv")
 
 # Display how many outliers were removed per feature
 # print("Outliers removed per feature:")

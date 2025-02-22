@@ -109,79 +109,77 @@ def get_raw_from_xdf(xdf_file_path: str, ref_electrode: str = "") -> mne.io.Raw:
     return raw
 
 
-# ---- Function to Apply Filtering and Handle Spikes ----
-def filter_and_handle_spikes(raw: mne.io.Raw, spike_threshold=200e-6, filter_threshold=100e-6, max_consecutive_spikes=5):
-    """Filters EEG data and removes/reduces sudden spikes."""
+# ---- Function to Apply the PREP Pipeline ----
+def apply_prep_pipeline(raw: mne.io.Raw):
+    """Applies PREP-like preprocessing to EEG data and tracks stats."""
     
-    print("🔄 Applying bandpass filter (1-40 Hz)...")
-    raw.filter(l_freq=1, h_freq=40, verbose=False)
+    stats = {"bad_channels": 0, "rejected_epochs": 0, "avg_removed_amp": [], "kept_epoch_amplitudes": []}
 
-    print("🔄 Applying notch filter (50 Hz)...")
-    raw.notch_filter(50, verbose=False)
+    print("🔄 Step 1: Removing Line Noise (50Hz Notch Filter)...")
+    raw.notch_filter(freqs=[50, 100, 150], fir_design='firwin')
 
-    # Get EEG data
-    raw_data = raw.get_data()
-    peak_values = np.max(np.abs(raw_data), axis=1)
+    print("🔄 Step 2: High-Pass Filtering (0.5 Hz)...")  # FIXED: More conservative filtering
+    raw.filter(l_freq=0.5, h_freq=None, fir_design='firwin')
 
-    # Identify extreme and moderate channels
-    extreme_channels = np.where(peak_values > spike_threshold)[0]
-    moderate_channels = np.where((peak_values > filter_threshold) & (peak_values < spike_threshold))[0]
+    print("🔄 Step 3: Detecting Bad Channels using PyPREP...")
+    prep_handler = NoisyChannels(raw)
+    prep_handler.find_bad_by_correlation(correlation_secs=1.5, correlation_threshold=0.45, frac_bad=0.03)  # FIXED: Only correlation-based detection
 
-    # Process extreme spikes: Interpolation or removal
-    for ch_idx in extreme_channels:
-        channel_data = raw_data[ch_idx]
-        spike_indices = np.where(np.abs(channel_data) > spike_threshold)[0]
+    bad_channels = prep_handler.get_bads()
+    stats["bad_channels"] = len(bad_channels)  # Track how many bad channels detected
 
-        if len(spike_indices) > 0:
-            print(f"🚨 Handling spikes in channel: {raw.ch_names[ch_idx]} ({len(spike_indices)} occurrences)")
-            spike_groups = np.split(spike_indices, np.where(np.diff(spike_indices) > 1)[0] + 1)
+    print(f"⚠️ Bad channels detected: {bad_channels}")
 
-            for group in spike_groups:
-                if len(group) > max_consecutive_spikes:
-                    print(f"❌ Removing segment in channel {raw.ch_names[ch_idx]} (Too many consecutive spikes: {len(group)})")
-                    channel_data[group] = np.nan
-                else:
-                    for spike_idx in group:
-                        if spike_idx > 1 and spike_idx < len(channel_data) - 2:
-                            channel_data[spike_idx] = np.median(channel_data[max(0, spike_idx-2):min(len(channel_data), spike_idx+3)])
-                        else:
-                            channel_data[spike_idx] = np.nan
+    if len(bad_channels) > 0:
+        bad_channels = bad_channels[:max(1, int(len(raw.ch_names) * 0.05))]  # FIXED: Only interpolate the worst 5%
+        raw.info["bads"] = bad_channels
+        print("🔄 Interpolating Bad Channels...")
+        raw.interpolate_bads()
 
-            nan_indices = np.where(np.isnan(channel_data))[0]
-            if len(nan_indices) > 0:
-                print(f"🔄 Interpolating {len(nan_indices)} missing values in {raw.ch_names[ch_idx]}")
-                valid_indices = np.where(~np.isnan(channel_data))[0]
-                if len(valid_indices) > 0:
-                    channel_data[nan_indices] = np.interp(nan_indices, valid_indices, channel_data[valid_indices])
+    print("✅ Step 4: Skipping Re-referencing (Default is Best)...")  # FIXED: Removed set_eeg_reference()
 
-    # Process moderate spikes: Apply additional filtering
-    if len(moderate_channels) > 0:
-        affected_moderate_channels = [raw.ch_names[i] for i in moderate_channels]
-        print(f"⚠️ Applying additional filtering for moderate spikes in channels: {affected_moderate_channels}")
-        raw.filter(l_freq=1, h_freq=30, picks=affected_moderate_channels, verbose=False)
-
-    raw._data[:] = raw_data  # Update raw object
-    print("✅ Spikes removed, data cleaned and interpolated.")
-    return raw
+    return raw, stats
 
 
-# ---- Epoch Creation ----
-def create_epochs(raw: mne.io.Raw):
-    """Creates epochs from raw EEG data while ensuring valid events."""
+# ---- Function to Create Epochs and Track Rejection Stats ----
+def create_epochs(raw: mne.io.Raw, stats):
+    """Creates epochs from raw EEG data while ensuring valid events and tracking rejections."""
+    
     events, event_id = mne.events_from_annotations(raw)
 
     if len(events) == 0:
         print("❌ No valid EEG events found! Skipping epoch creation.")
-        return None  
+        return None, stats  
 
-    # Define rejection criteria (increase threshold for fewer rejections)
+    # Define rejection criteria
     reject_criteria = dict(eeg=500e-6)
 
+    # Create epochs
     epochs = mne.Epochs(
         raw, events, event_id=event_id, preload=True, tmin=-10, tmax=25, baseline=(None, 0), reject=reject_criteria
     )
 
-    return epochs
+    # Track rejected epochs
+    stats["rejected_epochs"] = len(events) - len(epochs.selection)
+
+    if len(epochs) == 0:
+        print("⚠️ All epochs were removed due to artifact rejection!")
+        logging.warning(f"⚠️ All epochs removed. Check EEG signal quality and rejection criteria.")
+        # epochs.plot_drop_log()
+        return None, stats, len(events)  # Avoid further errors
+
+    # Compute amplitude values of rejected and kept epochs
+    all_epoch_amplitudes = np.max(np.abs(epochs.get_data()), axis=(1, 2))  # Max amplitude per epoch
+
+    if len(all_epoch_amplitudes) > 0:
+        removed_epochs = all_epoch_amplitudes[all_epoch_amplitudes > 500e-6]
+        stats["avg_removed_amp"] = np.mean(removed_epochs) if len(removed_epochs) > 0 else 0
+        stats["kept_epoch_amplitudes"] = all_epoch_amplitudes[all_epoch_amplitudes <= 500e-6]
+    else:
+        stats["avg_removed_amp"] = None  # No valid removed epochs
+        stats["kept_epoch_amplitudes"] = []
+
+    return epochs, stats, len(events)
 
 
 # ---- Main Function ----
@@ -190,56 +188,58 @@ def main():
     mne.set_log_level("WARNING")
 
     paths = get_random_eeg_file_paths("xdf", 5000)
-    stats = {"bad_channels": [], "bad_epochs": [], "successes": 0}
+    overall_stats = {"total_files": 0, "excluded_files": 0, "avg_bad_channels": [], "avg_rejected_epochs": [], "avg_removed_amp": [], "kept_data_ratio": []}
 
     for path in tqdm(paths):
         try:
+            # Load raw EEG data
             raw = get_raw_from_xdf(path).load_data()
         except Exception as e:
             logging.error(f"❌ Failed to load {path}: {e}")
+            overall_stats["excluded_files"] += 1
             continue
 
-        # ---- Bad channels ---- 
-        handler = NoisyChannels(raw)
-        handler.find_bad_by_deviation()  # Detects high/low amplitude noise
-        handler.find_bad_by_hfnoise()    # Detects high-frequency noise
-        bad_channels = handler.get_bads()
-        logging.info(f"Bad channels found: {bad_channels}")
+        overall_stats["total_files"] += 1
 
-        if bad_channels:
-            raw.info["bads"] = bad_channels
+        # Apply PREP pipeline
+        raw, stats = apply_prep_pipeline(raw)
 
-            # ✅ Check for NaN before interpolation
-            if not np.any(np.isnan(raw.get_data())):
-                raw.interpolate_bads()
-                raw.set_eeg_reference(ref_channels="average")
-            else:
-                logging.warning("⚠️ Skipping interpolation due to NaN values in raw data.")
-
-
-        # Plot BEFORE cleaning
-        raw.plot(block=True)
-
-        # Apply filtering and handle spikes
-        raw_new = filter_and_handle_spikes(raw)
-        if raw_new is None:
-            continue
-
-        raw._data = raw.get_data()
-        
-        raw_new.plot(block=True)
         # Create epochs
-        epochs = create_epochs(raw_new)
+        epochs, stats, num_events = create_epochs(raw, stats)
         if epochs is None or len(epochs.selection) == 0:
-            logging.warning(f"⚠️ All epochs removed for {path}. Skipping...")
+            logging.error(f"🛑 ALL EPOCHS REMOVED for {path}. Possible reasons:")
+            logging.error("🔹 Too many bad channels?")
+            logging.error(f"🔹 Channels interpolated: {stats['bad_channels']}")
+            logging.error("🔹 Artifact rejection threshold too strict?")
+            logging.error(f"🔹 Rejected Epochs: {stats['rejected_epochs']}")
+            logging.error("🔹 Consider adjusting rejection criteria or checking EEG quality.")
+            overall_stats["excluded_files"] += 1
             continue
 
         # Save Cleaned Data
         fif_file_path = str(path).replace(".xdf", "_clean-epo.fif")
         epochs.save(fif_file_path, overwrite=True)
-        stats["successes"] += 1
 
-    logging.info(f"✅ Successfully cleaned {stats['successes']} files.")
+        # Update statistics
+        overall_stats["avg_bad_channels"].append(stats["bad_channels"])
+        overall_stats["avg_rejected_epochs"].append(stats["rejected_epochs"])
+        overall_stats["avg_removed_amp"].append(stats["avg_removed_amp"])
+        overall_stats["kept_data_ratio"].append(len(epochs) / num_events if num_events > 0 else 0)
+
+        logging.info(f"✅ Successfully processed {path}.")
+        logging.info(f"🔹 Bad Channels Interpolated: {stats['bad_channels']}")
+        logging.info(f"🔹 Rejected Epochs: {stats['rejected_epochs']}")
+        logging.info(f"🔹 Avg Removed Amplitude: {stats['avg_removed_amp'] * 1e6:.2f} μV")
+        logging.info(f"🔹 Kept Data Ratio: {100 * (len(epochs) / num_events):.2f}%")
+
+    # Final summary
+    logging.info("🏁 **Final Preprocessing Summary:**")
+    logging.info(f"🔹 Total Files Processed: {overall_stats['total_files']}")
+    logging.info(f"🔹 Files Excluded: {overall_stats['excluded_files']}")
+    logging.info(f"🔹 Avg Bad Channels Interpolated: {np.mean(overall_stats['avg_bad_channels']):.2f}")
+    logging.info(f"🔹 Avg Epochs Rejected per File: {np.mean(overall_stats['avg_rejected_epochs']):.2f}")
+    logging.info(f"🔹 Avg Removed Amplitude: {np.mean(overall_stats['avg_removed_amp']) * 1e6:.2f} μV")
+    logging.info(f"🔹 Avg Kept Data Ratio: {np.mean(overall_stats['kept_data_ratio']) * 100:.2f}%")
 
 if __name__ == "__main__":
     t_start = time.time()

@@ -154,51 +154,72 @@ def main():
         arithmetics_moderate_event_count = epochs_arithmetics_moderate.selection.shape[0]
         epochs_arithmetics_hard = epochs['Mental arithmetics hard']
         arithmetics_hard_event_count = epochs_arithmetics_hard.selection.shape[0]
+
         del epochs
-        # epochs_audio.crop(tmin=0, tmax=10)
-        epochs_arithmetics_moderate.crop(tmin=0, tmax=25)
-        epochs_arithmetics_hard.crop(tmin=0, tmax=25)
+
+        # 🚨 If there are no moderate or hard arithmetic events, skip processing
+        if arithmetics_moderate_event_count == 0 and arithmetics_hard_event_count == 0:
+            logging.warning(f"⚠️ Skipping {path} because it contains no valid 'Mental arithmetics' epochs!")
+            continue
+
+        # 🚨 If `epochs_arithmetics_moderate` is empty, don't crop it
+        if arithmetics_moderate_event_count > 0:
+            epochs_arithmetics_moderate.crop(tmin=0, tmax=25)
+
+        # 🚨 If `epochs_arithmetics_hard` is empty, don't crop it
+        if arithmetics_hard_event_count > 0:
+            epochs_arithmetics_hard.crop(tmin=0, tmax=25)
 
         # ---- Brain wave band power ----
 
-        # powers_audio = compute_brain_wave_band_power(epochs_audio)
-        powers_arithmetics_moderate = compute_brain_wave_band_power(epochs_arithmetics_moderate)
-        powers_arithmetics_hard = compute_brain_wave_band_power(epochs_arithmetics_hard)
-
         powers = []
 
-        # Weighted average (by event count)
+        # 🚨 Compute Brain wave band power only if epochs exist
+        if arithmetics_moderate_event_count > 0:
+            powers_arithmetics_moderate = compute_brain_wave_band_power(epochs_arithmetics_moderate)
+        else:
+            logging.warning(f"⚠️ Skipping 'Mental arithmetics moderate' power extraction for {path} (No valid epochs).")
+            powers_arithmetics_moderate = [np.nan, np.nan, np.nan]  # Placeholder for missing data
+
+        if arithmetics_hard_event_count > 0:
+            powers_arithmetics_hard = compute_brain_wave_band_power(epochs_arithmetics_hard)
+        else:
+            logging.warning(f"⚠️ Skipping 'Mental arithmetics hard' power extraction for {path} (No valid epochs).")
+            powers_arithmetics_hard = [np.nan, np.nan, np.nan]  # Placeholder for missing data
+
+        # 🚨 If both are missing, skip power calculation
+        if np.all(np.isnan(powers_arithmetics_moderate)) and np.all(np.isnan(powers_arithmetics_hard)):
+            logging.warning(f"⚠️ Skipping power calculation for {path} (No valid epochs in any category).")
+            continue
+
+        # Weighted average (by event count), but ignore NaNs
         for i in range(3):
-            temp_power = np.average([powers_arithmetics_moderate[i],
-                                     powers_arithmetics_hard[i]],
-                                     weights=[arithmetics_moderate_event_count, arithmetics_hard_event_count])
+            values = []
+            weights = []
+
+            if not np.isnan(powers_arithmetics_moderate[i]):
+                values.append(powers_arithmetics_moderate[i])
+                weights.append(arithmetics_moderate_event_count)
+
+            if not np.isnan(powers_arithmetics_hard[i]):
+                values.append(powers_arithmetics_hard[i])
+                weights.append(arithmetics_hard_event_count)
+
+            if len(values) > 0:
+                temp_power = np.average(values, weights=weights)
+            else:
+                temp_power = np.nan  # If no valid data, store NaN
+
             powers.append(temp_power)
 
-        # Alpha / delta
-        powers.append(powers[2] / powers[0])
+        # Alpha / Delta ratio (only if Alpha and Delta are valid)
+        if not np.isnan(powers[0]) and not np.isnan(powers[2]) and powers[0] > 0:
+            powers.append(powers[2] / powers[0])
+        else:
+            powers.append(np.nan)  # Invalid ratio if missing data
 
         features += powers
 
-        # ---- Entropies ----
-
-        # entropies_audio = compute_entropy_features(epochs_audio)
-        # entropies_arithmetics_moderate = compute_entropies(epochs_arithmetics_moderate)
-        # entropies_arithmetics_hard = compute_entropies(epochs_arithmetics_hard)
-
-        # entropies = []
-
-        # Weighted average (by event count)
-        # for i in range(2):
-            # temp_entropy = np.average([entropies_arithmetics_moderate[i],
-                                     # entropies_arithmetics_hard[i]],
-                                     # weights=[arithmetics_moderate_event_count, arithmetics_hard_event_count])
-            # entropies.append(temp_entropy)
-
-        # features += entropies
-
-        # ---- Save to data structure ----
-
-        # assert len(features) == 9
         feature_list.append(features)
     
     # ---- Save to file ----

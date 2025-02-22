@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 
 # Define paths
 root_path = Path("L:\\LovbeskyttetMapper\\CONNECT-ME\\CONMED3\\Dataoptagelser\\NIRS-EEG\\")
-outlier_csv_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\feature_extraction_files\\eeg_outliers_detail_df.csv"
-output_dir = Path("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\EEG_Outlier_Segments")
+outlier_csv_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\feature_extraction_files\\eeg_outliers_detail_df_first_change_on_preprocessing.csv"
+output_dir = Path("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\plots\\EEG_Outlier_Segments_first_change_on_preprocessing")
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # Load outlier details
