@@ -124,11 +124,28 @@ class EEGPreprocessor:
         raw.filter(l_freq=0.5, h_freq=None, fir_design='firwin')
 
         print("🔄 Step 3: Detecting Bad Channels using PyPREP...")
+
         prep_handler = NoisyChannels(raw)
-        prep_handler.find_bad_by_correlation(correlation_secs=1.5, correlation_threshold=0.45, frac_bad=0.03)  # FIXED: Only correlation-based detection
+                # ✅ ADD: Detect bad channels by amplitude (spikes)
+        prep_handler.find_bad_by_ransac(
+            n_samples=50,            # Number of samples for RANSAC
+            sample_prop=0.25,        # Proportion of data used in each sample
+            corr_thresh=0.75,        # Correlation threshold for marking bad channels
+            frac_bad=0.4,            # Fraction of windows where a channel must be bad
+            corr_window_secs=5,       # Window size for correlation calculation
+            channel_wise=False        # Whether to perform RANSAC per channel separately
+        )
+        
+        prep_handler.find_bad_by_correlation(correlation_secs=1.5, correlation_threshold=0.45, frac_bad=0.03)  # Current method
+
+        # ✅ ADD: Detect bad channels by deviation (statistical outliers)
+        prep_handler.find_bad_by_deviation()
+
+        # ✅ ADD: Detect completely flat channels (no signal at all)
+        prep_handler.find_bad_by_nan_flat()
 
         bad_channels = prep_handler.get_bads()
-        stats["bad_channels"] = len(bad_channels)  # Track how many bad channels detected
+        stats["bad_channels"] = len(bad_channels)  
 
         print(f"⚠️ Bad channels detected: {bad_channels}")
 

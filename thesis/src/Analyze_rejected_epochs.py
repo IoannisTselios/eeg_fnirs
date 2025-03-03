@@ -3,12 +3,17 @@ import re
 import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
+import Pipeline_preprocess
+import mne
+import numpy as np
 
+
+excluded_dir = "skipped_files"
 # 🔹 Path to your rejected epochs log file
-log_file_path = "rejected_epochs_log.txt"
-
+log_file_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results\\run_20250225_1549\\skipped_files\\rejected_epochs_log.txt"
+preprocess = Pipeline_preprocess.EEGPreprocessor(excluded_dir)
 # 🔹 Output CSV file
-output_csv = "rejected_epochs_summary.csv"
+output_csv = "rejected_epochs_summary1.csv"
 
 # 🔹 Store extracted data
 rejected_data = []
@@ -73,7 +78,6 @@ summary_stats = {
     "Total Unique Patients": df["Patient ID"].nunique(),
     "Total Unique Sessions": df["Session"].nunique(),
     "Total Rejected Epochs": len(df),
-    "Total Unique Rejected Channels": len(df_channels),
     "Top Rejected Channel": df_channels.iloc[0]["Channel"] if not df_channels.empty else "N/A",
     "Top Rejected Channel Count": df_channels.iloc[0]["Rejections"] if not df_channels.empty else "N/A",
     "Average Channels Rejected per Epoch": df["Rejected Channels"].apply(len).mean(),
@@ -113,7 +117,7 @@ df["Patient ID"].value_counts().plot(kind="bar", color="green", alpha=0.7)
 plt.xlabel("Patient ID")
 plt.ylabel("Number of Rejected Epochs")
 plt.title("Rejected Epochs Per Patient")
-plt.xticks(rotation=90)
+plt.xticks(rotation=45)
 plt.show()
 
 # 📊 Heatmap of Top 15 Channels by Session
@@ -123,23 +127,14 @@ df_filtered = df_filtered[df_filtered["Rejected Channels"].isin(top_channels)]
 
 plt.figure(figsize=(12, 6))
 heatmap_data = df_filtered.pivot_table(index="Rejected Channels", columns="Session", aggfunc="size", fill_value=0)
-sns.heatmap(heatmap_data, annot=True, cmap="Blues", fmt="d")
+sns.heatmap(heatmap_data, annot=True, cmap="coolwarm", fmt="d")
 plt.title("Top 15 Rejected Channels Across Sessions")
 plt.xlabel("Session")
 plt.ylabel("Channel")
 plt.show()
 
-
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib
-import mne
-from collections import Counter
-
 # 🔹 Load the rejected epochs summary CSV
-df = pd.read_csv("rejected_epochs_summary.csv")
-matplotlib.use("Qt5Agg")  # Switch to a different interactive backend
+df = pd.read_csv("rejected_epochs_summary1.csv")
 
 # 🔹 Flatten and count rejected channels
 all_rejected_channels = [channel for sublist in df["Rejected Channels"] for channel in eval(sublist) if channel]
@@ -155,38 +150,41 @@ top_channels = df_channels.head(10)
 # 🔹 Load standard EEG positions (10-20 system)
 montage = mne.channels.make_standard_montage("standard_1020")
 
-# 🔹 Define mapping from custom names to standard 10-20 names
+# 🔹 Correct channel mapping (Custom EEG → Standard 10-20)
 channel_mapping = {
-    "AFp1": "Fp1", "AFF1h": "Fz", "AF7": "F3", "AFF5h": "F7", "FT7": "F9", "FC5": "FC5", "FC3": "FC1", "FCC3h": "C3",
-    "FFC1h": "T7", "FCC1h": "CP5", "CCP3h": "CP1", "CCP1h": "Pz", "CP1": "P3", "CP3": "P7", "CPP3h": "P9", "P1": "O1",
-    "AFp2": "Oz", "AFF2h": "O2", "AF8": "P10", "AFF6h": "P8", "FT8": "P4", "FC6": "CP2", "FC4": "CP6", "FCC4h": "T8",
-    "FFC2h": "C4", "FCC2h": "Cz", "CCP4h": "FC2", "CCP2h": "FC6", "CP2": "F10", "CP4": "F8", "CPP4h": "F4", "P2": "Fp2"
+    "AFp1": "Fp1", "AFF1h": "Fz", "AF7": "F3", "AFF5h": "F7", "FT7": "F9",
+    "FC5": "FC5", "FC3": "FC1", "FCC3h": "C3", "FFC1h": "T7", "FCC1h": "CP5",
+    "CCP3h": "CP1", "CCP1h": "Pz", "CP1": "P3", "CP3": "P7", "CPP3h": "P9",
+    "P1": "O1", "AFp2": "Oz", "AFF2h": "O2", "AF8": "P10", "AFF6h": "P8",
+    "FT8": "P4", "FC6": "CP2", "FC4": "CP6", "FCC4h": "T8", "FFC2h": "C4",
+    "FCC2h": "Cz", "CCP4h": "FC2", "CCP2h": "FC6", "CP2": "F10", "CP4": "F8",
+    "CPP4h": "F4", "P2": "Fp2"
 }
 
 # 🔹 Map rejected channel names back to standard 10-20 names
 mapped_channels = [channel_mapping.get(ch, ch) for ch in top_channels["Channel"]]
 
-# 🔹 Get valid positions for the mapped channels
-ch_pos = {ch: montage.get_positions()["ch_pos"][ch] for ch in mapped_channels if ch in montage.ch_names}
-
-# 🔹 Extract names and rejection values (only valid channels)
+# 🔹 Get valid positions for the mapped channels (Avoid KeyError)
+ch_pos = {ch: montage.get_positions()["ch_pos"].get(ch) for ch in mapped_channels if ch in montage.ch_names}
 valid_ch_names = list(ch_pos.keys())
-valid_ch_values = np.array([top_channels[top_channels["Channel"] == ch]["Rejections"].values[0] if ch in top_channels["Channel"].values else 0 for ch in valid_ch_names])
 
-# 🔹 Create an info object with correct number of channels
+# 🔹 Extract rejection values for valid channels
+valid_ch_values = np.array([channel_counts.get(ch, 0) for ch in valid_ch_names])
+
+# 🔹 Create MNE info object
 info = mne.create_info(valid_ch_names, sfreq=1000, ch_types="eeg")
 
-# 🔹 Create a subset montage with only the valid channels
+# 🔹 Create subset montage with only valid channels
 montage_subset = mne.channels.make_dig_montage({ch: ch_pos[ch] for ch in valid_ch_names})
 
-# 🔹 Reshape data to match the number of channels
-evoked_data = valid_ch_values.reshape(-1, 1)  # Convert to (channels, 1)
+# 🔹 Ensure correct shape for EvokedArray
+evoked_data = valid_ch_values.reshape(-1, 1)  
 
-# 🔹 Create an Evoked object
+# 🔹 Create Evoked object
 evoked = mne.EvokedArray(evoked_data, info)
 evoked.set_montage(montage_subset)
 
-# 🔹 Plot the rejected channels on a head map
+# 🔹 Plot rejected channels on a head map
 fig, ax = plt.subplots(figsize=(6, 5))
 im, _ = mne.viz.plot_topomap(evoked.data[:, 0], evoked.info, cmap="Reds", names=valid_ch_names, axes=ax)
 plt.colorbar(im, ax=ax, label="Number of Rejections")
@@ -194,4 +192,44 @@ plt.title("Top 10 Most Rejected EEG Channels on Head Map")
 plt.show()
 
 
+# 🔹 Path to your rejected files log
+rejected_files_log = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results\\run_20250225_1549\\skipped_files\\skipped_files_log.txt"
 
+# 🔹 Load the rejected files
+with open(rejected_files_log, "r") as file:
+    rejected_files = [line.strip().split(",")[0] for line in file.readlines()]
+
+# 🔹 Threshold for rejection (500 µV = 500e-6 V)
+threshold = 500e-6  
+
+# 🔹 Iterate through each rejected file
+for file_path in rejected_files:
+    print(f"\n🔍 Checking file: {file_path}")
+
+    try:
+        # Load raw EEG data
+        raw = preprocess.get_raw_from_xdf(file_path).load_data()
+
+        data, times = raw.get_data(return_times=True)  # Get EEG data
+        
+        # Compute the max absolute amplitude per channel
+        mean_amplitudes = np.mean(np.abs(data), axis=1)
+
+        # Check if any channel exceeds the threshold
+        exceeds_threshold = mean_amplitudes > threshold
+
+        # Print results
+        for ch_idx, max_amp in enumerate(mean_amplitudes):
+            ch_name = raw.ch_names[ch_idx]
+            print(f"  🧠 {ch_name}: {max_amp*1e6:.2f} µV {'⚠️ ABOVE THRESHOLD' if exceeds_threshold[ch_idx] else ''}")
+        
+        raw.plot(block=True)
+
+        # Summary: If any channel exceeds threshold
+        if np.any(exceeds_threshold):
+            print("🚨 High amplitude values detected! This file likely got rejected due to artifact rejection.\n")
+        else:
+            print("✅ No extreme values detected. Investigate why this file was rejected.\n")
+
+    except Exception as e:
+        print(f"❌ Failed to process {file_path}: {e}")
