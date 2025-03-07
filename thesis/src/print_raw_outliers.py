@@ -6,7 +6,7 @@ import mne
 import pandas as pd
 
 
-df_outliers = pd.read_csv("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results\\run_20250225_1549\\feature_extraction_files\\eeg_outliers_detail_df.csv")
+df_outliers = pd.read_csv("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results\\run_20250305_1241\\feature_extraction_files\\eeg_outliers_detail_df.csv")
         
 # Ensure `root_path` and `output_dir` are `Path` objects
 root_path = Path("L:\\LovbeskyttetMapper\\CONNECT-ME\\CONMED3\\Dataoptagelser\\NIRS-EEG\\")

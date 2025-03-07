@@ -1,5 +1,6 @@
 import logging
 import time
+import warnings
 import numpy as np
 import mne
 import pyxdf
@@ -7,6 +8,10 @@ from tqdm import tqdm
 from pyprep import NoisyChannels
 from utils.file_mgt import get_random_eeg_file_paths
 from mne import Annotations
+from mne.preprocessing import ICA, compute_current_source_density, annotate_muscle_zscore
+from scipy.signal import spectrogram
+from mne.preprocessing import compute_current_source_density
+from sklearn.cross_decomposition import CCA
 
 # ---- EEG Preprocessing ----
 class EEGPreprocessor:
@@ -111,51 +116,103 @@ class EEGPreprocessor:
         return raw
 
 
-    # ---- Function to Apply the PREP Pipeline ----
     def apply_prep_pipeline(self, raw: mne.io.Raw):
         """Applies PREP-like preprocessing to EEG data and tracks stats."""
         
         stats = {"bad_channels": 0, "rejected_epochs": 0, "avg_removed_amp": [], "kept_epoch_amplitudes": []}
 
-        print("🔄 Step 1: Removing Line Noise (50Hz Notch Filter)...")
-        raw.notch_filter(freqs=[50, 100, 150], fir_design='firwin')
+        print("\U0001F504 Step 1: Removing Line Noise (50Hz Notch Filter)...")
+        raw.notch_filter(freqs=[50], fir_design='firwin')
 
-        print("🔄 Step 2: High-Pass Filtering (0.5 Hz)...")  # FIXED: More conservative filtering
-        raw.filter(l_freq=0.5, h_freq=None, fir_design='firwin')
+        print("\U0001F504 Step 2: High-Pass Filtering (0.5 Hz)...")  # More conservative filtering
+        raw.filter(l_freq=0.5, h_freq=70, fir_design='firwin')
 
-        print("🔄 Step 3: Detecting Bad Channels using PyPREP...")
-
+        print("\U0001F504 Step 3: Detecting Bad Channels using PyPREP...")
         prep_handler = NoisyChannels(raw)
-                # ✅ ADD: Detect bad channels by amplitude (spikes)
-        prep_handler.find_bad_by_ransac(
-            n_samples=50,            # Number of samples for RANSAC
-            sample_prop=0.25,        # Proportion of data used in each sample
-            corr_thresh=0.75,        # Correlation threshold for marking bad channels
-            frac_bad=0.4,            # Fraction of windows where a channel must be bad
-            corr_window_secs=5,       # Window size for correlation calculation
-            channel_wise=False        # Whether to perform RANSAC per channel separately
-        )
-        
-        prep_handler.find_bad_by_correlation(correlation_secs=1.5, correlation_threshold=0.45, frac_bad=0.03)  # Current method
 
-        # ✅ ADD: Detect bad channels by deviation (statistical outliers)
-        prep_handler.find_bad_by_deviation()
+        # Detect bad channels using multiple methods
+        try:
+            print("🔹 Step 1: Detecting NaN and Flat Channels...")
+            prep_handler.find_bad_by_nan_flat()
+        except Exception as e:
+            print(f"⚠️ Error in `find_bad_by_nan_flat()`: {e}")
 
-        # ✅ ADD: Detect completely flat channels (no signal at all)
-        prep_handler.find_bad_by_nan_flat()
+        try:
+            print("🔹 Step 2: Detecting Extremely Noisy Channels (Deviation)...")
+            prep_handler.find_bad_by_deviation()
+        except Exception as e:
+            print(f"⚠️ Error in `find_bad_by_deviation()`: {e}")
+
+        try:
+            print("🔹 Step 3: Detecting Weakly Correlated Channels...")
+            prep_handler.find_bad_by_correlation(correlation_secs=1.5, correlation_threshold=0.45, frac_bad=0.03)
+        except Exception as e:
+            print(f"⚠️ Error in `find_bad_by_correlation()`: {e}")
+
+        try:
+            print("🔹 Step 4: Running RANSAC to Detect Bad Channels...")
+            np.random.seed(42)  # Ensures RANSAC selects the same data subsets
+            prep_handler.find_bad_by_ransac(n_samples=60, sample_prop=0.4, corr_thresh=0.80, frac_bad=0.35, corr_window_secs=5, channel_wise=False)
+        except Exception as e:
+            print(f"⚠️ Error in `find_bad_by_ransac()`: {e}")
 
         bad_channels = prep_handler.get_bads()
-        stats["bad_channels"] = len(bad_channels)  
+        stats["bad_channels"] = len(bad_channels)
 
         print(f"⚠️ Bad channels detected: {bad_channels}")
-
         if len(bad_channels) > 0:
-            bad_channels = bad_channels[:max(1, int(len(raw.ch_names) * 0.05))]  # FIXED: Only interpolate the worst 5%
+            bad_channels = bad_channels[:max(1, int(len(raw.ch_names) * 0.05))]
             raw.info["bads"] = bad_channels
-            print("🔄 Interpolating Bad Channels...")
+            print("\U0001F504 Interpolating Bad Channels...")
             raw.interpolate_bads()
 
-        print("✅ Step 4: Skipping Re-referencing (Default is Best)...")  # FIXED: Removed set_eeg_reference()
+        # print("\U0001F504 Step 4: Computing Current Source Density (CSD)...")
+        # raw_csd = compute_current_source_density(raw.copy())
+        # # print(raw_csd)
+
+        # print("\U0001F504 Step 5: Running ICA to Remove Artifacts...")
+        # try:
+        #     # Try using an automatic number of components
+        #     ica = ICA(n_components=0.99, random_state=97, method="fastica")
+        #     ica.fit(raw)
+
+        # except RuntimeError as e:
+        #     print(f"⚠️ ICA failed: {e}")
+
+        #     # If ICA fails due to a low number of components, try with `n_components=None`
+        #     print("🔄 Retrying ICA with `n_components=None` (no PCA reduction)...")
+
+        #     try:
+        #         n_components = min(len(raw.ch_names) - 1, 25)  # Default: Keep at least 25 components
+        #         ica = ICA(n_components=n_components, random_state=97, method="fastica")
+        #         ica.fit(raw)
+
+        #     except RuntimeError as e:
+        #         print(f"❌ ICA failed again: {e}")
+        #         print("⚠️ Skipping ICA and continuing the pipeline...")
+        #         return raw, stats  # Skip ICA and return the partially processed data
+
+        # # Detect and exclude ICA components for muscle artifacts
+        # muscle_inds, _ = ica.find_bads_muscle(raw_csd, threshold=3.0)
+        # ica.exclude.extend(muscle_inds)
+
+        # print(f"✅ Removing {len(ica.exclude)} muscle-related ICA components...")
+        # raw_clean = ica.apply(raw)
+        # print("✅ Muscle artifacts removed successfully with ICA.")
+
+        # print("\U0001F504 Step 6: Detecting and Annotating Muscle Artifacts...")
+
+        # annot_muscle, scores_muscle = annotate_muscle_zscore(
+        #     raw,
+        #     ch_type=None,
+        #     threshold=3.0,  
+        #     min_length_good=0.2,
+        #     filter_freq=[50, 70],
+        # )
+
+        # raw.set_annotations(raw.annotations + annot_muscle)  # Merge new and existing annotations
+        # raw.plot(block=True)
+        print("✅ Muscle artifacts detected and annotated.")
 
         return raw, stats
 
@@ -171,34 +228,53 @@ class EEGPreprocessor:
             return None, stats  
 
         # Define rejection criteria
-        reject_criteria = dict(eeg=500e-6)
+        reject_criteria = dict(eeg=500e-6)  # Reject epochs with amplitude > 500 µV
 
-        # ✅ Step 1: Create epochs WITHOUT rejection first (to analyze rejected epochs)
+        print("🔄 Step 1: Creating epochs WITHOUT rejection first (to analyze rejected epochs)...")
         epochs_all = mne.Epochs(
-            raw, events, event_id=event_id, preload=True, tmin=-10, tmax=25, baseline=(None, 0)
+            raw,
+            events,
+            event_id=event_id,
+            preload=True,
+            tmin=-10,
+            tmax=25,
+            baseline=(None, 0),
+            reject_by_annotation=False  # Keep all epochs for analysis
         )
 
         # ✅ Compute max amplitude of each epoch BEFORE rejection
         all_epoch_amplitudes = np.max(np.abs(epochs_all.get_data()), axis=(1, 2))  # Max amplitude per epoch
 
-        # ✅ Identify rejected epochs based on threshold (500 µV)
-        rejected_epochs = all_epoch_amplitudes > 500e-6
+        # ✅ Identify rejected epochs based on amplitude threshold (500 µV)
+        rejected_epochs = all_epoch_amplitudes > 150e-6
         rejected_amplitudes = all_epoch_amplitudes[rejected_epochs]
 
-        # ✅ Store the max & avg amplitude of rejected epochs in `stats`
+        # ✅ Store rejection stats
         stats["max_rejected_amp"] = np.max(rejected_amplitudes) if len(rejected_amplitudes) > 0 else 0
         stats["avg_removed_amp"] = np.mean(rejected_amplitudes) if len(rejected_amplitudes) > 0 else 0
-
-        # ✅ Store the kept epochs' amplitudes in `stats`
         stats["kept_epoch_amplitudes"] = all_epoch_amplitudes[~rejected_epochs].tolist()
 
-        # ✅ Step 2: Now create epochs with rejection
+        print("🔄 Step 2: Creating epochs with artifact rejection...")
+
+        # ✅ Step 2: Create epochs with rejection, including "MUSCLE" exclusion
         epochs = mne.Epochs(
-            raw, events, event_id=event_id, preload=True, tmin=-10, tmax=25, baseline=(None, 0), reject=reject_criteria
+            raw,
+            events,
+            event_id=event_id,
+            preload=True,
+            tmin=-10,
+            tmax=25,
+            baseline=(None, 0),
+            reject=reject_criteria,
+            reject_by_annotation=True  # ✅ This ensures "BAD_muscle" segments are excluded
         )
 
         # ✅ Track rejected epochs count
         stats["rejected_epochs"] = len(events) - len(epochs.selection)
+
+        # ✅ Count how many epochs were removed due to "BAD_muscle"
+        muscle_rejected = sum(["BAD_muscle" in log for log in epochs.drop_log])
+        stats["muscle_rejected_epochs"] = muscle_rejected
 
         # ✅ Store rejected epoch reasons inside `stats`
         stats["rejected_epoch_reasons"] = {f"Epoch {i}": reason for i, reason in enumerate(epochs.drop_log) if reason}
@@ -209,8 +285,9 @@ class EEGPreprocessor:
             logging.warning(f"⚠️ All epochs removed. Check EEG signal quality and rejection criteria.")
             return None, stats, len(events)  # Avoid further errors
 
+        print(f"✅ Epoch creation completed. {muscle_rejected} epochs removed due to 'MUSCLE' artifacts.")
+        
         return epochs, stats, len(events)
-
 
 
     def process(self):
@@ -234,6 +311,7 @@ class EEGPreprocessor:
 
             # Apply PREP pipeline
             raw, stats = self.apply_prep_pipeline(raw)
+            # raw.plot(block=True)
 
             # Create epochs
             epochs, stats, num_events = self.create_epochs(raw, stats)
@@ -298,11 +376,18 @@ class EEGPreprocessor:
             logging.info(f"📄 Skipped files log saved: skipped_files_log.txt")
 
         # Final summary
-        logging.info("🏁 **Final Preprocessing Summary:**")
-        logging.info(f"🔹 Total Files Processed: {overall_stats['total_files']}")
-        logging.info(f"🔹 Files Excluded: {overall_stats['excluded_files']}")
-        logging.info(f"🔹 Avg Bad Channels Interpolated: {np.mean(overall_stats['avg_bad_channels']):.2f}")
-        logging.info(f"🔹 Avg Epochs Rejected per File: {np.mean(overall_stats['avg_rejected_epochs']):.2f}")
-        logging.info(f"🔹 Avg Removed Amplitude: {np.mean(overall_stats['avg_removed_amp']) * 1e6:.2f} μV")
-        logging.info(f"🔹 Avg Kept Data Ratio: {np.mean(overall_stats['kept_data_ratio']) * 100:.2f}%")
+        # Define the summary file path
+        summary_file_path = self.excluded_dir / "preprocessing_summary.txt"
 
+        # Write the summary to the file
+        with open(summary_file_path, "w", encoding="utf-8") as f:
+            f.write("**Final Preprocessing Summary:**\n")
+            f.write(f"Total Files Processed: {overall_stats['total_files']}\n")
+            f.write(f"Files Excluded: {overall_stats['excluded_files']}\n")
+            f.write(f"Avg Bad Channels Interpolated: {np.mean(overall_stats['avg_bad_channels']):.2f}\n")
+            f.write(f"Avg Epochs Rejected per File: {np.mean(overall_stats['avg_rejected_epochs']):.2f}\n")
+            f.write(f"Avg Removed Amplitude: {np.mean(overall_stats['avg_removed_amp']) * 1e6:.2f} μV\n")
+            f.write(f"Avg Kept Data Ratio: {np.mean(overall_stats['kept_data_ratio']) * 100:.2f}%\n")
+
+        # Log that the summary has been saved
+        logging.info(f"📄 Preprocessing summary saved to: {summary_file_path}")

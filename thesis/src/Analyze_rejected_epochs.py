@@ -10,7 +10,7 @@ import numpy as np
 
 excluded_dir = "skipped_files"
 # 🔹 Path to your rejected epochs log file
-log_file_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results\\run_20250225_1549\\skipped_files\\rejected_epochs_log.txt"
+log_file_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results\\run_20250305_1241\\skipped_files\\rejected_epochs_log.txt"
 preprocess = Pipeline_preprocess.EEGPreprocessor(excluded_dir)
 # 🔹 Output CSV file
 output_csv = "rejected_epochs_summary1.csv"
