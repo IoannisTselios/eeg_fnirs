@@ -5,8 +5,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import StandardScaler
-from utils.file_mgt import get_random_eeg_file_paths
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -91,103 +89,90 @@ class EEGVisualizer:
         print("Outlier patient violin plots saved in:", output_dir_outliers)
 
     def plot_all_outlier_patients(self, df, outlier_details_df, ylabels, name_prefix="outliers_analysis", use_log_scale=False):
-        """
-        Generates detailed plots for ALL patients identified as outliers.
-        - Each patient gets a dedicated plot with all features.
-        - Outlier values are highlighted in red.
-        - Time-series trends are emphasized.
-        - Boxplots are added to compare distributions over time.
-        - Optionally applies log scaling to better visualize variations.
-
-        Parameters:
-        - df: Processed DataFrame
-        - outlier_details_df: DataFrame containing detected outliers
-        - ylabels: Dictionary mapping feature names to labels
-        - name_prefix: Prefix for saved plots.
-        - use_log_scale: Whether to apply log scaling to y-axis.
-        """
-
-        # Define output directory
         output_dir = self.plot_output_dir / Path("All_Outlier_Patients")
         os.makedirs(output_dir, exist_ok=True)
 
-        # Automatically get all unique outlier patients from outlier_details_df
         outlier_patients = outlier_details_df['id'].unique()
-
-        # Set a color palette for different patients
         patient_colors = sns.color_palette("tab10", len(outlier_patients))
         patient_color_map = {pid: color for pid, color in zip(outlier_patients, patient_colors)}
 
-        # ---- Generate detailed time-series & boxplots for each outlier patient ----
         for patient_id in outlier_patients:
             df_patient = df[df['id'] == patient_id].copy()
             df_outlier_patient = outlier_details_df[outlier_details_df['id'] == patient_id].copy()
 
-            # Debug: Print patient data to confirm it exists
             if df_patient.empty:
                 print(f"⚠️ Warning: No data found for Patient {patient_id}")
                 continue
 
-            # Convert time to integer (if it's not already)
             df_patient["time"] = df_patient["time"].astype(int)
             df_outlier_patient["time"] = df_outlier_patient["time"].astype(int)
 
-            # Set up subplots (time series & boxplot for each feature)
             num_features = len(ylabels.keys())
             fig, axes = plt.subplots(num_features, 2, figsize=(18, num_features * 4), sharex=True)
 
-            if num_features == 1:  # If only one feature, axes is not a list
-                axes = np.array([axes])  # Convert to 2D array for consistency
+            if num_features == 1:
+                axes = np.array([axes])
 
             for i, feature in enumerate(ylabels.keys()):
                 ax_ts, ax_box = axes[i]
 
                 # ---- Time Series Plot ----
-                ax_ts.plot(df_patient['time'], df_patient[feature], marker='o', linestyle='dashed',
-                        markersize=6, alpha=0.7, color=patient_color_map[patient_id], label=f"Patient {patient_id}")
+                try:
+                    ax_ts.plot(df_patient['time'], df_patient[feature], marker='o', linestyle='dashed',
+                            markersize=6, alpha=0.7, color=patient_color_map[patient_id], label=f"Patient {patient_id}")
 
-                # Highlight outliers in red
-                outlier_points = df_outlier_patient[df_outlier_patient["Feature"] == feature]
-                if not outlier_points.empty:
-                    ax_ts.scatter(outlier_points["time"], outlier_points[feature], color="red", s=80, label="Outlier")
+                    outlier_points = df_outlier_patient[df_outlier_patient["Feature"] == feature]
+                    if not outlier_points.empty:
+                        ax_ts.scatter(outlier_points["time"], outlier_points[feature], color="red", s=80, label="Outlier")
 
-                    # Annotate the values of the outliers
-                    for _, row in outlier_points.iterrows():
-                        ax_ts.annotate(f"{row[feature]:.2f}", (row["time"], row[feature]), textcoords="offset points",
-                                    xytext=(5,5), ha='center', fontsize=10, color="red")
+                        for _, row in outlier_points.iterrows():
+                            ax_ts.annotate(f"{row[feature]:.2f}", (row["time"], row[feature]), textcoords="offset points",
+                                        xytext=(5, 5), ha='center', fontsize=10, color="red")
 
-                # Labels and formatting
-                ax_ts.set_ylabel(ylabels[feature])
-                ax_ts.set_title(f"Patient {patient_id} - {feature} Over Time")
-                ax_ts.grid(True)
+                    ax_ts.set_ylabel(ylabels[feature])
+                    ax_ts.set_title(f"Patient {patient_id} - {feature} Over Time")
+                    ax_ts.grid(True)
 
-                # Apply log scale if needed
-                if use_log_scale:
-                    ax_ts.set_yscale("log")
+                    if use_log_scale:
+                        ax_ts.set_yscale("log")
 
-                # ---- Boxplot for Feature Distribution Over Time ----
-                sns.boxplot(data=df, x="time", y=feature, ax=ax_box, palette="pastel")
-                sns.stripplot(data=df_patient, x="time", y=feature, ax=ax_box, color=patient_color_map[patient_id], size=8, jitter=True)
+                except Exception as e:
+                    print(f"❌ Error plotting time series for patient {patient_id}, feature {feature}: {e}")
 
-                # Highlight outliers in red on the boxplot
-                sns.stripplot(data=df_outlier_patient, x="time", y=feature, ax=ax_box, color="red", size=8, jitter=True, label="Outliers")
+                # ---- Box Plot ----
+                try:
+                    sns.boxplot(data=df, x="time", y=feature, ax=ax_box, palette="pastel")
 
-                # Labels and formatting for boxplot
-                ax_box.set_ylabel(ylabels[feature])
-                ax_box.set_title(f"Feature Distribution Over Time - {feature}")
-                ax_box.grid(True)
+                    # ✅ Catch if the data is empty or malformed
+                    if not df_patient.empty:
+                        sns.stripplot(data=df_patient, x="time", y=feature, ax=ax_box,
+                                    color=patient_color_map[patient_id], size=8, jitter=True)
 
-            # Shared x-axis formatting
-            axes[-1, 0].set_xlabel("Time")  # Bottom left subplot for Time Series
-            axes[-1, 1].set_xlabel("Time")  # Bottom right subplot for Boxplot
+                    if not df_outlier_patient.empty:
+                        sns.stripplot(data=df_outlier_patient, x="time", y=feature, ax=ax_box,
+                                    color="red", size=8, jitter=True, label="Outliers")
+
+                    ax_box.set_ylabel(ylabels[feature])
+                    ax_box.set_title(f"Feature Distribution Over Time - {feature}")
+                    ax_box.grid(True)
+
+                except Exception as e:
+                    print(f"❌ Error plotting boxplot for patient {patient_id}, feature {feature}: {e}")
+
+            axes[-1, 0].set_xlabel("Time")
+            axes[-1, 1].set_xlabel("Time")
             plt.xticks(sorted(df_patient["time"].unique()), rotation=45)
 
-            # Improve layout and save
-            plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, f"Outlier_Patient_{patient_id}_{name_prefix}.png"))
-            plt.close()
+            # ✅ Clean up plots and avoid memory leaks
+            try:
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_dir, f"Outlier_Patient_{patient_id}_{name_prefix}.png"))
+                plt.close()
+            except Exception as e:
+                print(f"❌ Error saving plot for patient {patient_id}: {e}")
 
         print(f"📊 All outlier patient plots saved in: {output_dir}")
+
 
     def remove_outliers_iqr(self, df, features):
         """

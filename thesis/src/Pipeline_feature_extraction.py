@@ -1,5 +1,4 @@
 import logging
-import os
 import pandas as pd
 import mne
 import numpy as np
@@ -41,7 +40,7 @@ class EEGFeatureExtractor:
         if not isinstance(window_sec, (int, float)) or window_sec <= 0:
             raise ValueError(f"Invalid window_sec value: {window_sec}")
 
-        nperseg = int(window_sec * sf)  # Match YASA's segment length
+        nperseg = min(int(window_sec * sf), len(data))  # Match YASA's segment length
         noverlap = nperseg // 2  # Match YASA's default overlap
 
         # Compute the Power Spectral Density (PSD) using Welch’s method
@@ -117,10 +116,21 @@ class EEGFeatureExtractor:
 
             # epochs_audio = epochs['Audio']
             # audio_event_count = epochs_audio.selection.shape[0]
-            epochs_arithmetics_moderate = epochs['Mental arithmetics moderate']
-            arithmetics_moderate_event_count = epochs_arithmetics_moderate.selection.shape[0]
-            epochs_arithmetics_hard = epochs['Mental arithmetics hard']
-            arithmetics_hard_event_count = epochs_arithmetics_hard.selection.shape[0]
+            try:
+                epochs_arithmetics_moderate = epochs["Mental arithmetics moderate"]
+                arithmetics_moderate_event_count = epochs_arithmetics_moderate.selection.shape[0]
+            except KeyError:
+                logging.warning(f"⚠️ 'Mental arithmetics moderate' not found in {path}, skipping this category.")
+                epochs_arithmetics_moderate = None
+                arithmetics_moderate_event_count = 0
+
+            try:
+                epochs_arithmetics_hard = epochs["Mental arithmetics hard"]
+                arithmetics_hard_event_count = epochs_arithmetics_hard.selection.shape[0]
+            except KeyError:
+                logging.warning(f"⚠️ 'Mental arithmetics hard' not found in {path}, skipping this category.")
+                epochs_arithmetics_hard = None
+                arithmetics_hard_event_count = 0
 
             del epochs
 

@@ -1,23 +1,26 @@
 import logging
-import time
-import warnings
 import numpy as np
 import mne
+import pandas as pd
 import pyxdf
 from tqdm import tqdm
 from pyprep import NoisyChannels
 from utils.file_mgt import get_random_eeg_file_paths
 from mne import Annotations
-from mne.preprocessing import ICA, compute_current_source_density, annotate_muscle_zscore
-from scipy.signal import spectrogram
-from mne.preprocessing import compute_current_source_density
-from sklearn.cross_decomposition import CCA
+from mne.preprocessing import ICA
+from mne_icalabel import label_components
+from autoreject import AutoReject
 
 # ---- EEG Preprocessing ----
 class EEGPreprocessor:
 
-    def __init__(self, excluded_dir):
+    def __init__(self, excluded_dir, epoch_size, sample_size, epoch_rejection_threshold, ica_threshold, preprocessed_files_dir):
         self.excluded_dir = excluded_dir
+        self.epoch_size = epoch_size
+        self.sample_size = sample_size
+        self.epoch_rejection_threshold = epoch_rejection_threshold
+        self.ica_threshold = ica_threshold
+        self.preprocessed_files_dir = preprocessed_files_dir
         logging.info("EEG Preprocessor Initialized")
 
     def get_raw_from_xdf(self, xdf_file_path: str, ref_electrode: str = "") -> mne.io.Raw:
@@ -82,21 +85,32 @@ class EEGPreprocessor:
         info = mne.create_info(channel_names, sfreq, ["eeg"] * eeg_channel_count)
         raw = mne.io.RawArray(data, info, verbose=False)
 
-        # Event annotations
+        # Event annotations (original markers)
         origin_time = streams[stream_index]["time_stamps"][0]
         markers_time_stamps = [
             e - origin_time for e in streams[stream_index_markers]["time_stamps"]
         ]
         markers_nb = len(markers_time_stamps)
-        markers = Annotations(
-            onset=markers_time_stamps,
-            duration=[10] * 3 + [25] * 5 + [25] * 5,
-            description=["Audio"] * 3
-            + ["Mental arithmetics moderate"] * 5
-            + ["Mental arithmetics hard"] * 5,
-            ch_names=[channel_names] * markers_nb,
-        )
-        raw.set_annotations(markers)
+
+        # ✅ Original event descriptions
+        event_descriptions = ["Audio"] * 3 + ["Mental arithmetics moderate"] * 5 + ["Mental arithmetics hard"] * 5
+        event_durations = [10] * 3 + [25] * 5 + [25] * 5  # Original durations
+
+        # ✅ Define segment duration for splitting
+        segment_duration = self.epoch_size  # Change this value if needed
+
+        # ✅ Create new split events while keeping original descriptions
+        new_onsets = []
+        new_descriptions = []
+
+        for onset, duration, desc in zip(markers_time_stamps, event_durations, event_descriptions):
+            segment_times = np.arange(onset, onset + duration, segment_duration)  # Splitting into 5s segments
+            new_onsets.extend(segment_times)
+            new_descriptions.extend([desc] * len(segment_times))  # Assign the same description to each segment
+
+        # ✅ Store all new split annotations
+        split_markers = Annotations(onset=new_onsets, duration=[segment_duration] * len(new_onsets), description=new_descriptions)
+        raw.set_annotations(split_markers)
 
         # Set the reference montage
         if ref_electrode != "":
@@ -116,110 +130,115 @@ class EEGPreprocessor:
         return raw
 
 
-    def apply_prep_pipeline(self, raw: mne.io.Raw):
-        """Applies PREP-like preprocessing to EEG data and tracks stats."""
-        
+    def apply_prep_pipeline(self, raw: mne.io.Raw, name_of_preprocessed):
         stats = {"bad_channels": 0, "rejected_epochs": 0, "avg_removed_amp": [], "kept_epoch_amplitudes": []}
 
-        print("\U0001F504 Step 1: Removing Line Noise (50Hz Notch Filter)...")
-        raw.notch_filter(freqs=[50], fir_design='firwin')
+        print("\n🧪 Starting Preprocessing...")
 
-        print("\U0001F504 Step 2: High-Pass Filtering (0.5 Hz)...")  # More conservative filtering
-        raw.filter(l_freq=0.5, h_freq=70, fir_design='firwin')
+        # ✅ Step 1: Remove Line Noise using Multi-Taper Spectrum Fit
+        print("\n🔹 Step 1: Removing Line Noise using Multi-Taper Spectrum Fit...")
+        raw.notch_filter(freqs=[50], fir_design='firwin', method='spectrum_fit')
 
-        print("\U0001F504 Step 3: Detecting Bad Channels using PyPREP...")
+        # ✅ Step 2: High-pass filter at 0.5 Hz
+        print("🔹 Step 2: High-Pass Filtering (0.5 Hz)...")
+        raw.filter(l_freq=0.5, h_freq=40, fir_design='firwin')
+
+        # ✅ Step 3: Detect bad channels using PyPREP
+        print("🔹 Step 3: Detecting Bad Channels using PyPREP...")
         prep_handler = NoisyChannels(raw)
 
-        # Detect bad channels using multiple methods
         try:
-            print("🔹 Step 1: Detecting NaN and Flat Channels...")
             prep_handler.find_bad_by_nan_flat()
-        except Exception as e:
-            print(f"⚠️ Error in `find_bad_by_nan_flat()`: {e}")
-
-        try:
-            print("🔹 Step 2: Detecting Extremely Noisy Channels (Deviation)...")
             prep_handler.find_bad_by_deviation()
+            prep_handler.find_bad_by_correlation(
+                correlation_secs=1.5, correlation_threshold=0.45, frac_bad=0.03
+            )
+            np.random.seed(42)
+            prep_handler.find_bad_by_ransac(
+                n_samples=self.sample_size, sample_prop=0.25, corr_thresh=0.75,
+                frac_bad=0.4, corr_window_secs=5, channel_wise=False
+            )
         except Exception as e:
-            print(f"⚠️ Error in `find_bad_by_deviation()`: {e}")
-
-        try:
-            print("🔹 Step 3: Detecting Weakly Correlated Channels...")
-            prep_handler.find_bad_by_correlation(correlation_secs=1.5, correlation_threshold=0.45, frac_bad=0.03)
-        except Exception as e:
-            print(f"⚠️ Error in `find_bad_by_correlation()`: {e}")
-
-        try:
-            print("🔹 Step 4: Running RANSAC to Detect Bad Channels...")
-            np.random.seed(42)  # Ensures RANSAC selects the same data subsets
-            prep_handler.find_bad_by_ransac(n_samples=60, sample_prop=0.4, corr_thresh=0.80, frac_bad=0.35, corr_window_secs=5, channel_wise=False)
-        except Exception as e:
-            print(f"⚠️ Error in `find_bad_by_ransac()`: {e}")
+            print(f"⚠️ Error in bad channel detection: {e}")
 
         bad_channels = prep_handler.get_bads()
         stats["bad_channels"] = len(bad_channels)
 
-        print(f"⚠️ Bad channels detected: {bad_channels}")
-        if len(bad_channels) > 0:
-            bad_channels = bad_channels[:max(1, int(len(raw.ch_names) * 0.05))]
-            raw.info["bads"] = bad_channels
-            print("\U0001F504 Interpolating Bad Channels...")
-            raw.interpolate_bads()
+        print(f"\n⚠️ Bad channels detected: {bad_channels}")
+        if len(bad_channels) <= int(len(raw.ch_names) * 0.3):
+            raw.info['bads'] = bad_channels
+            raw.interpolate_bads(reset_bads=True)
+            print(f"✅ Interpolated {len(bad_channels)} channels")
+        else:
+            print(f"❌ Too many bad channels ({len(bad_channels)}). Skipping interpolation.")
 
-        # print("\U0001F504 Step 4: Computing Current Source Density (CSD)...")
-        # raw_csd = compute_current_source_density(raw.copy())
-        # # print(raw_csd)
+        # ✅ Step 4: Re-reference after detecting bad channels
+        good_channels = [ch for ch in raw.ch_names if ch not in bad_channels]
+        if len(good_channels) > 0:
+            raw.set_eeg_reference(ref_channels=good_channels)
+            print(f"✅ Re-referenced using {len(good_channels)} good channels.")
 
-        # print("\U0001F504 Step 5: Running ICA to Remove Artifacts...")
+        # # ✅ Step 5: ICA for artifact detection
+        # print("🔹 Step 5: Running ICA to Detect Artifacts...")
         # try:
-        #     # Try using an automatic number of components
-        #     ica = ICA(n_components=0.99, random_state=97, method="fastica")
+        #     ica = ICA(n_components=0.99, random_state=42, max_iter="auto")
         #     ica.fit(raw)
 
-        # except RuntimeError as e:
-        #     print(f"⚠️ ICA failed: {e}")
+        #     try:
+        #         # ✅ Detect muscle artifacts using z-score threshold
+        #         muscle_indices, muscle_scores = ica.find_bads_muscle(raw, threshold=self.ica_threshold)
+        #         if muscle_indices:
+        #             ica.exclude.extend(muscle_indices)
+        #             print(f"✅ Detected and removed {len(muscle_indices)} muscle artifacts")
 
-        #     # If ICA fails due to a low number of components, try with `n_components=None`
-        #     print("🔄 Retrying ICA with `n_components=None` (no PCA reduction)...")
+        #     except Exception as e:
+        #         print(f"❌ Error in muscle artifact detection: {e}")
 
         #     try:
-        #         n_components = min(len(raw.ch_names) - 1, 25)  # Default: Keep at least 25 components
-        #         ica = ICA(n_components=n_components, random_state=97, method="fastica")
-        #         ica.fit(raw)
+        #         # ✅ Label ICA components using ICLabel
+        #         labels = label_components(raw, ica, method="iclabel")
+        #         bad_components = [
+        #             idx for idx, label in enumerate(labels["labels"])
+        #             if label in ["eye blink", "muscle artifact", "line noise"]
+        #         ]
+        #         if bad_components:
+        #             ica.exclude.extend(bad_components)
+        #             print(f"✅ Detected and removed {len(bad_components)} bad ICs via ICLabel")
 
-        #     except RuntimeError as e:
-        #         print(f"❌ ICA failed again: {e}")
-        #         print("⚠️ Skipping ICA and continuing the pipeline...")
-        #         return raw, stats  # Skip ICA and return the partially processed data
+        #     except Exception as e:
+        #         print(f"❌ Error in ICLabel component labeling: {e}")
 
-        # # Detect and exclude ICA components for muscle artifacts
-        # muscle_inds, _ = ica.find_bads_muscle(raw_csd, threshold=3.0)
-        # ica.exclude.extend(muscle_inds)
+        #     try:
+        #         # ✅ Apply ICA (remove bad components)
+        #         ica.apply(raw)
+        #         print(f"✅ Applied ICA — Total components removed: {len(ica.exclude)}")
 
-        # print(f"✅ Removing {len(ica.exclude)} muscle-related ICA components...")
-        # raw_clean = ica.apply(raw)
-        # print("✅ Muscle artifacts removed successfully with ICA.")
+        #     except Exception as e:
+        #         print(f"❌ Error in ICA application: {e}")
 
-        # print("\U0001F504 Step 6: Detecting and Annotating Muscle Artifacts...")
+        # except Exception as e:
+        #     print(f"❌ Error in ICA fitting: {e}")
 
-        # annot_muscle, scores_muscle = annotate_muscle_zscore(
-        #     raw,
-        #     ch_type=None,
-        #     threshold=3.0,  
-        #     min_length_good=0.2,
-        #     filter_freq=[50, 70],
-        # )
+        # ✅ Step 6: Remove existing artifact annotations before epoching
+        if len(raw.annotations) > 0:
+            print("🔹 Step 6: Removing existing artifact annotations...")
+            raw.annotations.delete(
+                [i for i, desc in enumerate(raw.annotations.description) if "BAD_" in desc]
+            )
+            print(f"✅ Removed {len(raw.annotations)} artifact annotations")
 
-        # raw.set_annotations(raw.annotations + annot_muscle)  # Merge new and existing annotations
-        # raw.plot(block=True)
-        print("✅ Muscle artifacts detected and annotated.")
+        print("✅ Preprocessing Complete!")
+        # ✅ Step 7: Save preprocessed raw to FIF
+        output_path = self.preprocessed_files_dir / f"{name_of_preprocessed}_preprocessed_raw.fif"
+        raw.save(output_path, overwrite=True)
+        print(f"💾 Saved preprocessed raw file to: {output_path}")
+
 
         return raw, stats
 
 
-    # ---- Function to Create Epochs and Track Rejection Stats ----
     def create_epochs(self, raw: mne.io.Raw, stats):
-        """Creates epochs from raw EEG data while ensuring valid events and tracking rejections."""
+        """Creates epochs from raw EEG data using AutoReject and tracks rejection statistics."""
 
         events, event_id = mne.events_from_annotations(raw)
 
@@ -227,67 +246,59 @@ class EEGPreprocessor:
             print("❌ No valid EEG events found! Skipping epoch creation.")
             return None, stats  
 
-        # Define rejection criteria
-        reject_criteria = dict(eeg=500e-6)  # Reject epochs with amplitude > 500 µV
-
-        print("🔄 Step 1: Creating epochs WITHOUT rejection first (to analyze rejected epochs)...")
+        print("\n\033[92m🔄 Step 6: Creating epochs WITHOUT rejection...\033[0m")
         epochs_all = mne.Epochs(
             raw,
             events,
             event_id=event_id,
             preload=True,
-            tmin=-10,
-            tmax=25,
-            baseline=(None, 0),
-            reject_by_annotation=False  # Keep all epochs for analysis
+            tmin=-self.epoch_size,
+            tmax=self.epoch_size,
+            baseline=(-0.1, 0),
+            reject_by_annotation=False
         )
 
         # ✅ Compute max amplitude of each epoch BEFORE rejection
-        all_epoch_amplitudes = np.max(np.abs(epochs_all.get_data()), axis=(1, 2))  # Max amplitude per epoch
+        all_epoch_amplitudes = np.max(np.abs(epochs_all.get_data()), axis=(1, 2))
+        rejected_epochs_amplitude = all_epoch_amplitudes > self.epoch_rejection_threshold
 
-        # ✅ Identify rejected epochs based on amplitude threshold (500 µV)
-        rejected_epochs = all_epoch_amplitudes > 150e-6
-        rejected_amplitudes = all_epoch_amplitudes[rejected_epochs]
+        stats["max_rejected_amp"] = float(np.max(all_epoch_amplitudes))
+        stats["avg_removed_amp"] = float(np.mean(all_epoch_amplitudes))
+        print(f"   ✅ Max amplitude before rejection: {stats['max_rejected_amp']:.2f} µV")
 
-        # ✅ Store rejection stats
-        stats["max_rejected_amp"] = np.max(rejected_amplitudes) if len(rejected_amplitudes) > 0 else 0
-        stats["avg_removed_amp"] = np.mean(rejected_amplitudes) if len(rejected_amplitudes) > 0 else 0
-        stats["kept_epoch_amplitudes"] = all_epoch_amplitudes[~rejected_epochs].tolist()
+        # 🧠 Use AutoReject instead of manual rejection
+        print("\n\033[92m🔄 Step 7: Cleaning epochs with AutoReject...\033[0m")
+        ar = AutoReject(thresh_method='bayesian_optimization',
+                        random_state=42,
+                        n_jobs=-1)
+        epochs_clean = ar.fit_transform(epochs_all)
+        reject_log = ar.get_reject_log(epochs_all)
 
-        print("🔄 Step 2: Creating epochs with artifact rejection...")
+        # ✅ Rejected epochs and interpolation stats
+        stats["rejected_epochs"] = int(np.sum(reject_log.bad_epochs))
+        stats["interpolated_epochs"] = int(np.sum(np.any(reject_log.labels == 1, axis=1)))
+        stats["interpolated_channels"] = int(np.sum(reject_log.labels))
 
-        # ✅ Step 2: Create epochs with rejection, including "MUSCLE" exclusion
-        epochs = mne.Epochs(
-            raw,
-            events,
-            event_id=event_id,
-            preload=True,
-            tmin=-10,
-            tmax=25,
-            baseline=(None, 0),
-            reject=reject_criteria,
-            reject_by_annotation=True  # ✅ This ensures "BAD_muscle" segments are excluded
-        )
+        print(f"   ✅ Total epochs rejected by AutoReject: {stats['rejected_epochs']}")
+        print(f"   🔧 Epochs with interpolated channels: {stats['interpolated_epochs']}")
+        print(f"   🔧 Total channels interpolated across all epochs: {stats['interpolated_channels']}")
 
-        # ✅ Track rejected epochs count
-        stats["rejected_epochs"] = len(events) - len(epochs.selection)
+        if len(epochs_clean) == 0:
+            print("⚠️ All epochs removed after AutoReject!")
+            logging.warning("⚠️ All epochs removed after AutoReject.")
+            return None, stats, len(events)
 
-        # ✅ Count how many epochs were removed due to "BAD_muscle"
-        muscle_rejected = sum(["BAD_muscle" in log for log in epochs.drop_log])
-        stats["muscle_rejected_epochs"] = muscle_rejected
-
-        # ✅ Store rejected epoch reasons inside `stats`
-        stats["rejected_epoch_reasons"] = {f"Epoch {i}": reason for i, reason in enumerate(epochs.drop_log) if reason}
-
-        # ✅ If all epochs are rejected, log and return None
-        if len(epochs) == 0:
-            print("⚠️ All epochs were removed due to artifact rejection!")
-            logging.warning(f"⚠️ All epochs removed. Check EEG signal quality and rejection criteria.")
-            return None, stats, len(events)  # Avoid further errors
-
-        print(f"✅ Epoch creation completed. {muscle_rejected} epochs removed due to 'MUSCLE' artifacts.")
+        print(reject_log.labels.shape)  # (n_epochs, n_channels)
         
-        return epochs, stats, len(events)
+        # How many epochs had at least 1 interpolated channel?
+        n_epochs_interpolated = np.sum(np.any(reject_log.labels == 1, axis=1))
+
+        # Total interpolated channels:
+        n_total_channels_interpolated = np.sum(reject_log.labels)
+        print(n_epochs_interpolated)
+        print(n_total_channels_interpolated)
+
+        return epochs_clean, stats, len(events)
 
 
     def process(self):
@@ -298,7 +309,14 @@ class EEGPreprocessor:
         overall_stats = {"total_files": 0, "excluded_files": 0, "avg_bad_channels": [], "avg_rejected_epochs": [], "avg_removed_amp": [], "kept_data_ratio": []}
         skipped_files = []
 
+        df_exclude  = pd.read_csv("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\thesis\\src\\eeg_noise_detected_files.csv")  # This CSV should have a column with paths
+        excluded_paths  = set(df_exclude ["file"].dropna().tolist())  # Ensure clean set of strings
+
         for path in tqdm(paths):
+            if str(path) in excluded_paths:
+                logging.info(f"⏭️ Skipping {path} — marked as excluded")
+                continue
+
             try:
                 # Load raw EEG data
                 raw = self.get_raw_from_xdf(path).load_data()
@@ -309,8 +327,11 @@ class EEGPreprocessor:
 
             overall_stats["total_files"] += 1
 
+            parts = path.parts[-4:-1]  # ['Patient ID 1 - U1 (UWS)', 'Session 1', 'Baseline']
+            custom_name = "_".join(parts)
+
             # Apply PREP pipeline
-            raw, stats = self.apply_prep_pipeline(raw)
+            raw, stats = self.apply_prep_pipeline(raw, custom_name)
             # raw.plot(block=True)
 
             # Create epochs
