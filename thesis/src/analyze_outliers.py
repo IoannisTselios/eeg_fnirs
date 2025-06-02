@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # Path to the root directory containing the results
-root_dir = Path(r'L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results\\run_20250402_1756')
+root_dir = Path(r'L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results\\run_20250404_1629')
 fif_path = Path(r'L:\\LovbeskyttetMapper\\CONNECT-ME\\CONMED3\\Dataoptagelser\\NIRS-EEG')
 # Output directories for CSV and plots
 csv_output_dir = root_dir / "csv_outputs"

@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 import numpy as np
 import mne
 import pandas as pd
@@ -56,11 +57,10 @@ class EEGPreprocessor:
             if e["label"][0] == ref_electrode:
                 ref_channel = index
 
-        # Extract channels' info
         data = streams[stream_index]["time_series"].T
-        # It is assumed that the EEG channels are the first ones
+
         data = data[:eeg_channel_count]
-        # micro V to V and preamp gain ???
+
         data[:] *= 1e-6  # / 2
         sfreq = float(streams[stream_index]["info"]["nominal_srate"][0])
         channel_names = [
@@ -133,7 +133,7 @@ class EEGPreprocessor:
     def apply_prep_pipeline(self, raw: mne.io.Raw, name_of_preprocessed):
         stats = {"bad_channels": 0, "rejected_epochs": 0, "avg_removed_amp": [], "kept_epoch_amplitudes": []}
 
-        print("\n🧪 Starting Preprocessing...")
+        print("\n Starting Preprocessing...")
 
         # ✅ Step 1: Remove Line Noise using Multi-Taper Spectrum Fit
         print("\n🔹 Step 1: Removing Line Noise using Multi-Taper Spectrum Fit...")
@@ -159,24 +159,24 @@ class EEGPreprocessor:
                 frac_bad=0.4, corr_window_secs=5, channel_wise=False
             )
         except Exception as e:
-            print(f"⚠️ Error in bad channel detection: {e}")
+            print(f" Error in bad channel detection: {e}")
 
         bad_channels = prep_handler.get_bads()
         stats["bad_channels"] = len(bad_channels)
 
-        print(f"\n⚠️ Bad channels detected: {bad_channels}")
+        print(f"\n Bad channels detected: {bad_channels}")
         if len(bad_channels) <= int(len(raw.ch_names) * 0.3):
             raw.info['bads'] = bad_channels
             raw.interpolate_bads(reset_bads=True)
-            print(f"✅ Interpolated {len(bad_channels)} channels")
+            print(f" Interpolated {len(bad_channels)} channels")
         else:
-            print(f"❌ Too many bad channels ({len(bad_channels)}). Skipping interpolation.")
+            print(f" Too many bad channels ({len(bad_channels)}). Skipping interpolation.")
 
         # ✅ Step 4: Re-reference after detecting bad channels
         good_channels = [ch for ch in raw.ch_names if ch not in bad_channels]
         if len(good_channels) > 0:
             raw.set_eeg_reference(ref_channels=good_channels)
-            print(f"✅ Re-referenced using {len(good_channels)} good channels.")
+            print(f" Re-referenced using {len(good_channels)} good channels.")
 
         # # ✅ Step 5: ICA for artifact detection
         # print("🔹 Step 5: Running ICA to Detect Artifacts...")
@@ -225,9 +225,9 @@ class EEGPreprocessor:
             raw.annotations.delete(
                 [i for i, desc in enumerate(raw.annotations.description) if "BAD_" in desc]
             )
-            print(f"✅ Removed {len(raw.annotations)} artifact annotations")
+            print(f" Removed {len(raw.annotations)} artifact annotations")
 
-        print("✅ Preprocessing Complete!")
+        print(" Preprocessing Complete!")
         # ✅ Step 7: Save preprocessed raw to FIF
         output_path = self.preprocessed_files_dir / f"{name_of_preprocessed}_preprocessed_raw.fif"
         raw.save(output_path, overwrite=True)
@@ -279,13 +279,13 @@ class EEGPreprocessor:
         stats["interpolated_epochs"] = int(np.sum(np.any(reject_log.labels == 1, axis=1)))
         stats["interpolated_channels"] = int(np.sum(reject_log.labels))
 
-        print(f"   ✅ Total epochs rejected by AutoReject: {stats['rejected_epochs']}")
-        print(f"   🔧 Epochs with interpolated channels: {stats['interpolated_epochs']}")
-        print(f"   🔧 Total channels interpolated across all epochs: {stats['interpolated_channels']}")
+        print(f"    Total epochs rejected by AutoReject: {stats['rejected_epochs']}")
+        print(f"    Epochs with interpolated channels: {stats['interpolated_epochs']}")
+        print(f"    Total channels interpolated across all epochs: {stats['interpolated_channels']}")
 
         if len(epochs_clean) == 0:
-            print("⚠️ All epochs removed after AutoReject!")
-            logging.warning("⚠️ All epochs removed after AutoReject.")
+            print(" All epochs removed after AutoReject!")
+            logging.warning(" All epochs removed after AutoReject.")
             return None, stats, len(events)
 
         print(reject_log.labels.shape)  # (n_epochs, n_channels)
@@ -309,19 +309,27 @@ class EEGPreprocessor:
         overall_stats = {"total_files": 0, "excluded_files": 0, "avg_bad_channels": [], "avg_rejected_epochs": [], "avg_removed_amp": [], "kept_data_ratio": []}
         skipped_files = []
 
-        df_exclude  = pd.read_csv("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\thesis\\src\\eeg_noise_detected_files.csv")  # This CSV should have a column with paths
-        excluded_paths  = set(df_exclude ["file"].dropna().tolist())  # Ensure clean set of strings
+        with open("files_with_1_and_2.txt", "r") as f:
+            skip_ids = set(line.strip() for line in f if line.strip())
 
         for path in tqdm(paths):
-            if str(path) in excluded_paths:
-                logging.info(f"⏭️ Skipping {path} — marked as excluded")
+            try:
+                parts = Path(path).parts
+                identifier = f"{parts[-4]}_{parts[-3]}_{parts[-2]}"
+            except IndexError:
+                logging.warning(f" Could not parse identifier from path: {path}")
+                continue
+
+            if identifier in skip_ids:
+                logging.info(f"⏭ Skipping {identifier} — in skip list")
+                # skipped_files.append(str(path))
                 continue
 
             try:
                 # Load raw EEG data
                 raw = self.get_raw_from_xdf(path).load_data()
             except Exception as e:
-                logging.error(f"❌ Failed to load {path}: {e}")
+                logging.error(f" Failed to load {path}: {e}")
                 overall_stats["excluded_files"] += 1
                 continue
 
@@ -331,6 +339,7 @@ class EEGPreprocessor:
             custom_name = "_".join(parts)
 
             # Apply PREP pipeline
+            # raw.plot(block=True)
             raw, stats = self.apply_prep_pipeline(raw, custom_name)
             # raw.plot(block=True)
 
@@ -339,7 +348,7 @@ class EEGPreprocessor:
             # 🚨 CASE 1: If epochs is None, log and skip file immediately
             if epochs is None:
                 reason = "All epochs removed due to artifact rejection."
-                logging.error(f"🛑 {reason} for {path}")
+                logging.error(f" {reason} for {path}")
                 skipped_files.append((path, reason))
                 overall_stats["excluded_files"] += 1
                 continue
@@ -348,14 +357,14 @@ class EEGPreprocessor:
             if len(epochs.selection) == 0:
                 drop_log_str = "; ".join([f"Epoch {i}: {reason}" for i, reason in enumerate(epochs.drop_log) if reason])
                 reason = f"All epochs removed! Reasons: {drop_log_str if drop_log_str else 'Unknown'}"
-                logging.error(f"🛑 {reason} for {path}")
-                skipped_files.append((path, reason))
+                logging.error(f" {reason} for {path}")
+                skipped_files.append((path, reason)) 
 
-                logging.error("🔹 Too many bad channels?")
-                logging.error(f"🔹 Channels interpolated: {stats['bad_channels']}")
-                logging.error("🔹 Artifact rejection threshold too strict?")
-                logging.error(f"🔹 Rejected Epochs: {stats['rejected_epochs']}")
-                logging.error("🔹 Consider adjusting rejection criteria or checking EEG quality.")
+                logging.error(" Too many bad channels?")
+                logging.error(f" Channels interpolated: {stats['bad_channels']}")
+                logging.error(" Artifact rejection threshold too strict?")
+                logging.error(f" Rejected Epochs: {stats['rejected_epochs']}")
+                logging.error(" Consider adjusting rejection criteria or checking EEG quality.")
 
                 overall_stats["excluded_files"] += 1
                 continue
@@ -372,7 +381,7 @@ class EEGPreprocessor:
                     for log in rejected_epoch_logs:
                         f.write(log + "\n")
 
-                logging.warning(f"⚠️ Some epochs were rejected in {path}. Reasons stored in rejected_epochs_log.txt")
+                logging.warning(f" Some epochs were rejected in {path}. Reasons stored in rejected_epochs_log.txt")
 
             # Save Cleaned Data
             fif_file_path = str(path).replace(".xdf", "_clean-epo.fif")
@@ -384,17 +393,17 @@ class EEGPreprocessor:
             overall_stats["avg_removed_amp"].append(stats["avg_removed_amp"])
             overall_stats["kept_data_ratio"].append(len(epochs) / num_events if num_events > 0 else 0)
 
-            logging.info(f"✅ Successfully processed {path}.")
-            logging.info(f"🔹 Bad Channels Interpolated: {stats['bad_channels']}")
-            logging.info(f"🔹 Rejected Epochs: {stats['rejected_epochs']}")
-            logging.info(f"🔹 Avg Removed Amplitude: {stats['avg_removed_amp'] * 1e6:.2f} μV" if stats["avg_removed_amp"] is not None else "🔹 Avg Removed Amplitude: N/A")
-            logging.info(f"🔹 Kept Data Ratio: {100 * (len(epochs) / num_events):.2f}%")
+            logging.info(f" Successfully processed {path}.")
+            logging.info(f" Bad Channels Interpolated: {stats['bad_channels']}")
+            logging.info(f" Rejected Epochs: {stats['rejected_epochs']}")
+            logging.info(f" Avg Removed Amplitude: {stats['avg_removed_amp'] * 1e6:.2f} μV" if stats["avg_removed_amp"] is not None else "🔹 Avg Removed Amplitude: N/A")
+            logging.info(f" Kept Data Ratio: {100 * (len(epochs) / num_events):.2f}%")
 
             with open(self.excluded_dir / "skipped_files_log.txt", "w") as f:
                 for file, reason in skipped_files:
                     f.write(f"{file}, {reason}\n")
 
-            logging.info(f"📄 Skipped files log saved: skipped_files_log.txt")
+            logging.info(f" Skipped files log saved: skipped_files_log.txt")
 
         # Final summary
         # Define the summary file path

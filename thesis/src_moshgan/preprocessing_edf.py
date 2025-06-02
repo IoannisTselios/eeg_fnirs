@@ -9,10 +9,11 @@ from tqdm import tqdm
 from pyprep import NoisyChannels
 from mne.preprocessing import ICA
 from mne_icalabel import label_components
+from autoreject import AutoReject
 
 class EEGPreprocessor:
 
-    def __init__(self, excluded_dir, epoch_size, sample_size, epoch_rejection_threshold, ica_threshold, SOURCE_FOLDER, TARGET_FOLDER, SNR_TARGET):
+    def __init__(self, excluded_dir, epoch_size, sample_size, epoch_rejection_threshold, ica_threshold, SOURCE_FOLDER, TARGET_FOLDER, SNR_TARGET, Epochs_target):
         self.excluded_dir = excluded_dir
         self.epoch_size = epoch_size
         self.sample_size = sample_size
@@ -21,6 +22,7 @@ class EEGPreprocessor:
         self.SOURCE_FOLDER = SOURCE_FOLDER
         self.TARGET_FOLDER = TARGET_FOLDER
         self.SNR_TARGET = SNR_TARGET
+        self.Epochs_target = Epochs_target
         logging.info("EEG Preprocessor Initialized")
 
     def prepare_raw_data(self, raw: mne.io.Raw):
@@ -228,12 +230,79 @@ class EEGPreprocessor:
         print("✅ Preprocessing Complete!")
 
         return raw, stats
+    
+
+    def create_epochs(self, raw: mne.io.Raw, stats):
+        """Creates epochs from raw EEG data using AutoReject and tracks rejection statistics."""
+
+        events, event_id = mne.events_from_annotations(raw)
+
+        if len(events) == 0:
+            print("❌ No valid EEG events found! Skipping epoch creation.")
+            return None, stats  
+
+        print("\n\033[92m🔄 Step 6: Creating epochs WITHOUT rejection...\033[0m")
+        epochs_all = mne.Epochs(
+            raw,
+            events,
+            event_id=event_id,
+            preload=True,
+            tmin=-self.epoch_size,
+            tmax=self.epoch_size,
+            baseline=(-0.1, 0),
+            reject_by_annotation=False,
+            event_repeated="merge",
+        )
+
+        # ✅ Compute max amplitude of each epoch BEFORE rejection
+        all_epoch_amplitudes = np.max(np.abs(epochs_all.get_data()), axis=(1, 2))
+        rejected_epochs_amplitude = all_epoch_amplitudes > self.epoch_rejection_threshold
+
+        stats["max_rejected_amp"] = float(np.max(all_epoch_amplitudes))
+        stats["avg_removed_amp"] = float(np.mean(all_epoch_amplitudes))
+        print(f"   ✅ Max amplitude before rejection: {stats['max_rejected_amp']:.2f} µV")
+
+        # 🧠 Use AutoReject instead of manual rejection
+        print("\n\033[92m🔄 Step 7: Cleaning epochs with AutoReject...\033[0m")
+        ar = AutoReject(thresh_method='bayesian_optimization',
+                        random_state=42,
+                        n_jobs=-1)
+        epochs_clean = ar.fit_transform(epochs_all)
+        reject_log = ar.get_reject_log(epochs_all)
+
+        # ✅ Rejected epochs and interpolation stats
+        stats["rejected_epochs"] = int(np.sum(reject_log.bad_epochs))
+        stats["interpolated_epochs"] = int(np.sum(np.any(reject_log.labels == 1, axis=1)))
+        stats["interpolated_channels"] = int(np.sum(reject_log.labels))
+
+        print(f"   ✅ Total epochs rejected by AutoReject: {stats['rejected_epochs']}")
+        print(f"   🔧 Epochs with interpolated channels: {stats['interpolated_epochs']}")
+        print(f"   🔧 Total channels interpolated across all epochs: {stats['interpolated_channels']}")
+
+        if len(epochs_clean) == 0:
+            print("⚠️ All epochs removed after AutoReject!")
+            logging.warning("⚠️ All epochs removed after AutoReject.")
+            return None, stats, len(events)
+
+        print(reject_log.labels.shape)  # (n_epochs, n_channels)
+        
+        # How many epochs had at least 1 interpolated channel?
+        n_epochs_interpolated = np.sum(np.any(reject_log.labels == 1, axis=1))
+
+        # Total interpolated channels:
+        n_total_channels_interpolated = np.sum(reject_log.labels)
+        print(n_epochs_interpolated)
+        print(n_total_channels_interpolated)
+
+        return epochs_clean, stats, len(events)
 
 
     def process(self):
         # ✅ Setup logging
         logging.basicConfig(force=True, format="%(levelname)s - %(name)s - %(message)s", level=logging.INFO)
         mne.set_log_level("WARNING")
+        overall_stats = {"total_files": 0, "excluded_files": 0, "avg_bad_channels": [], "avg_rejected_epochs": [], "avg_removed_amp": [], "kept_data_ratio": []}
+        skipped_files = []
 
         # ✅ Find all .fif files in the folder
         fif_files = glob.glob(os.path.join(self.SOURCE_FOLDER, "*.fif"))
@@ -277,6 +346,69 @@ class EEGPreprocessor:
                 raw.save(target_file, overwrite=True)
                 logging.info(f"✅ Saved processed file to: {target_file}")
 
+                epochs, stats, num_events = self.create_epochs(raw, stats)
+
+                # 🚨 CASE 1: If epochs is None, log and skip file immediately
+                if epochs is None:
+                    reason = "All epochs removed due to artifact rejection."
+                    logging.error(f"🛑 {reason} for {file}")
+                    skipped_files.append((file, reason))
+                    overall_stats["excluded_files"] += 1
+                    continue
+
+                # 🚨 CASE 2: If epochs exist but all were rejected, log drop reasons
+                if len(epochs.selection) == 0:
+                    drop_log_str = "; ".join([f"Epoch {i}: {reason}" for i, reason in enumerate(epochs.drop_log) if reason])
+                    reason = f"All epochs removed! Reasons: {drop_log_str if drop_log_str else 'Unknown'}"
+                    logging.error(f"🛑 {reason} for {file}")
+                    skipped_files.append((file, reason)) 
+
+                    logging.error("🔹 Too many bad channels?")
+                    logging.error(f"🔹 Channels interpolated: {stats['bad_channels']}")
+                    logging.error("🔹 Artifact rejection threshold too strict?")
+                    logging.error(f"🔹 Rejected Epochs: {stats['rejected_epochs']}")
+                    logging.error("🔹 Consider adjusting rejection criteria or checking EEG quality.")
+
+                    overall_stats["excluded_files"] += 1
+                    continue
+
+                rejected_epoch_logs = []
+                for i, reason in enumerate(epochs.drop_log):
+                    if reason:  # Only log rejected epochs
+                        rejected_epoch_logs.append(f"Epoch {i}: {reason}")
+
+                # 🚨 If some epochs were rejected, save them to `rejected_epochs_log.txt`
+                if rejected_epoch_logs:
+                    with open(self.excluded_dir / "rejected_epochs_log.txt", "a") as f:
+                        f.write(f"\nFile: {file}\n")
+                        for log in rejected_epoch_logs:
+                            f.write(log + "\n")
+
+                    logging.warning(f"⚠️ Some epochs were rejected in {file}. Reasons stored in rejected_epochs_log.txt")
+                
+                base = os.path.splitext(os.path.basename(file))[0]
+                output_path = os.path.join(self.Epochs_target, base + "_clean-epo.fif")
+
+                epochs.save(output_path, overwrite=True)
+
+                 # Update statistics
+                overall_stats["avg_bad_channels"].append(stats["bad_channels"])
+                overall_stats["avg_rejected_epochs"].append(stats["rejected_epochs"])
+                overall_stats["avg_removed_amp"].append(stats["avg_removed_amp"])
+                overall_stats["kept_data_ratio"].append(len(epochs) / num_events if num_events > 0 else 0)
+
+                logging.info(f"✅ Successfully processed {file}.")
+                logging.info(f"🔹 Bad Channels Interpolated: {stats['bad_channels']}")
+                logging.info(f"🔹 Rejected Epochs: {stats['rejected_epochs']}")
+                logging.info(f"🔹 Avg Removed Amplitude: {stats['avg_removed_amp'] * 1e6:.2f} μV" if stats["avg_removed_amp"] is not None else "🔹 Avg Removed Amplitude: N/A")
+                logging.info(f"🔹 Kept Data Ratio: {100 * (len(epochs) / num_events):.2f}%")
+
+                with open(self.excluded_dir / "skipped_files_log.txt", "w") as f:
+                    for file, reason in skipped_files:
+                        f.write(f"{file}, {reason}\n")
+
+                logging.info(f"📄 Skipped files log saved: skipped_files_log.txt")
+
                 processed_count += 1
 
             except FileNotFoundError:
@@ -303,6 +435,22 @@ class EEGPreprocessor:
         if failed_count > 0:
             logging.warning(f"⚠️ {failed_count} files failed during processing.")
 
+         # Define the summary file path
+        summary_file_path = self.excluded_dir / "preprocessing_summary.txt"
+
+        # Write the summary to the file
+        with open(summary_file_path, "w", encoding="utf-8") as f:
+            f.write("**Final Preprocessing Summary:**\n")
+            f.write(f"Total Files Processed: {overall_stats['total_files']}\n")
+            f.write(f"Files Excluded: {overall_stats['excluded_files']}\n")
+            f.write(f"Avg Bad Channels Interpolated: {np.mean(overall_stats['avg_bad_channels']):.2f}\n")
+            f.write(f"Avg Epochs Rejected per File: {np.mean(overall_stats['avg_rejected_epochs']):.2f}\n")
+            f.write(f"Avg Removed Amplitude: {np.mean(overall_stats['avg_removed_amp']) * 1e6:.2f} μV\n")
+            f.write(f"Avg Kept Data Ratio: {np.mean(overall_stats['kept_data_ratio']) * 100:.2f}%\n")
+
+        # Log that the summary has been saved
+        logging.info(f"📄 Preprocessing summary saved to: {summary_file_path}")
+        
         print("\n🚀 All files processed!")
 
 # ✅ Create an instance of the preprocessor and run it

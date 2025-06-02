@@ -60,13 +60,12 @@ class EEGFeatureExtractor:
 
         return bp
 
-    def compute_brain_wave_band_power(self, epochs: mne.Epochs) -> tuple[float, float, float]:
+    def compute_brain_wave_band_power(self, epochs: mne.Epochs) -> tuple[float, float]:
         """
         Computes the relative band power averaged across channels and epochs, for Delta, Theta, and Alpha frequency bands.
         """
         delta_power = 0
         theta_power = 0
-        alpha_power = 0
 
         epochs_data = epochs.get_data(copy=False)
 
@@ -74,20 +73,18 @@ class EEGFeatureExtractor:
             
             df = self.bandpower_mne(epochs_data[epoch_id] * 1e6,
                             sf = float(epochs._raw_sfreq[0]),
-                            bands = [(0.5, 4, "Delta"), (4, 8, "Theta"), (8, 13, "Alpha")],
+                            bands = [(0.5, 4, "Delta"), (4, 8, "Theta")],
                             ch_names = epochs.ch_names
                             )
 
             delta_power += np.mean(df['Delta'])
             theta_power += np.mean(df['Theta'])
-            alpha_power += np.mean(df['Alpha'])
             del df
 
         delta_power /= epochs_data.shape[0]
         theta_power /= epochs_data.shape[0]
-        alpha_power /= epochs_data.shape[0]
 
-        return (delta_power, theta_power, alpha_power)
+        return (delta_power, theta_power)
 
     def extract_features(self, feature_output_dir):
         mne.set_log_level("WARNING")
@@ -110,98 +107,77 @@ class EEGFeatureExtractor:
 
             # ---- Epoch ----
 
+            # ---- Epoch Extraction: Include all epochs after first target annotation ----
+            # ---- Epoch Extraction: Include all epochs after first target annotation ----
             epochs = mne.read_epochs(path)
-            
-            # ---- Split by event type ----
 
-            # epochs_audio = epochs['Audio']
-            # audio_event_count = epochs_audio.selection.shape[0]
-            try:
-                epochs_arithmetics_moderate = epochs["Mental arithmetics moderate"]
-                arithmetics_moderate_event_count = epochs_arithmetics_moderate.selection.shape[0]
-            except KeyError:
-                logging.warning(f"⚠️ 'Mental arithmetics moderate' not found in {path}, skipping this category.")
-                epochs_arithmetics_moderate = None
-                arithmetics_moderate_event_count = 0
+            # Find first annotation (either moderate or hard)
+            first_annot_idx = None
+            for idx, annot in enumerate(epochs.event_id.keys()):
+                if "Mental arithmetics moderate" in annot or "Mental arithmetics hard" in annot:
+                    first_annot_idx = idx
+                    break
 
-            try:
-                epochs_arithmetics_hard = epochs["Mental arithmetics hard"]
-                arithmetics_hard_event_count = epochs_arithmetics_hard.selection.shape[0]
-            except KeyError:
-                logging.warning(f"⚠️ 'Mental arithmetics hard' not found in {path}, skipping this category.")
-                epochs_arithmetics_hard = None
-                arithmetics_hard_event_count = 0
-
-            del epochs
-
-            # 🚨 If there are no moderate or hard arithmetic events, skip processing
-            if arithmetics_moderate_event_count == 0 and arithmetics_hard_event_count == 0:
-                logging.warning(f"⚠️ Skipping {path} because it contains no valid 'Mental arithmetics' epochs!")
+            if first_annot_idx is None:
+                logging.warning(f"⚠️ No 'Mental arithmetics' annotations in {path}. Skipping.")
                 continue
 
-            # 🚨 If `epochs_arithmetics_moderate` is empty, don't crop it
-            if arithmetics_moderate_event_count > 0:
-                epochs_arithmetics_moderate.crop(tmin=0, tmax=25)
+            # Get time index of first relevant event
+            first_event_time = epochs.events[first_annot_idx, 0] / epochs.info['sfreq']
 
-            # 🚨 If `epochs_arithmetics_hard` is empty, don't crop it
-            if arithmetics_hard_event_count > 0:
-                epochs_arithmetics_hard.crop(tmin=0, tmax=25)
+            # Select epochs occurring after this time
+            onsets = np.array([e[0] / epochs.info['sfreq'] for e in epochs.events])
+            valid_epochs_mask = onsets >= first_event_time
+            epochs_selected = epochs[valid_epochs_mask]
 
-            # ---- Brain wave band power ----
-
-            powers = []
-
-            # 🚨 Compute Brain wave band power only if epochs exist
-            if arithmetics_moderate_event_count > 0:
-                powers_arithmetics_moderate = self.compute_brain_wave_band_power(epochs_arithmetics_moderate)
-            else:
-                logging.warning(f"⚠️ Skipping 'Mental arithmetics moderate' power extraction for {path} (No valid epochs).")
-                powers_arithmetics_moderate = [np.nan, np.nan, np.nan]  # Placeholder for missing data
-
-            if arithmetics_hard_event_count > 0:
-                powers_arithmetics_hard = self.compute_brain_wave_band_power(epochs_arithmetics_hard)
-            else:
-                logging.warning(f"⚠️ Skipping 'Mental arithmetics hard' power extraction for {path} (No valid epochs).")
-                powers_arithmetics_hard = [np.nan, np.nan, np.nan]  # Placeholder for missing data
-
-            # 🚨 If both are missing, skip power calculation
-            if np.all(np.isnan(powers_arithmetics_moderate)) and np.all(np.isnan(powers_arithmetics_hard)):
-                logging.warning(f"⚠️ Skipping power calculation for {path} (No valid epochs in any category).")
+            if len(epochs_selected) == 0:
+                logging.warning(f"⚠️ No epochs after first relevant annotation in {path}. Skipping.")
                 continue
 
-            # Weighted average (by event count), but ignore NaNs
-            for i in range(3):
-                values = []
-                weights = []
+            # ---- Crop to first 25 seconds of each epoch
+            epochs_selected.crop(tmin=0, tmax=25)
 
-                if not np.isnan(powers_arithmetics_moderate[i]):
-                    values.append(powers_arithmetics_moderate[i])
-                    weights.append(arithmetics_moderate_event_count)
+            # ---- Get data for each epoch
+            sfreq = float(epochs_selected.info["sfreq"])
+            epochs_data = epochs_selected.get_data(copy=False) * 1e6  # Convert to uV
 
-                if not np.isnan(powers_arithmetics_hard[i]):
-                    values.append(powers_arithmetics_hard[i])
-                    weights.append(arithmetics_hard_event_count)
+            # ---- Define fronto-central channels ----
+            fc_channels = ["AFF1h", "AF7", "AFF5h", "AFF6h", "AF8", "FC5", "FC3", "FCC3h", "FCC4h", "FFC2h", "FCC2h", "CCP3h", "CCP4h"]
 
-                if len(values) > 0:
-                    temp_power = np.average(values, weights=weights)
-                else:
-                    temp_power = np.nan  # If no valid data, store NaN
+            # ---- Loop over epochs to compute delta & theta per channel ----
+            for epoch_idx, epoch_data in enumerate(epochs_data):
+                features = [
+                    path.parts[6],  # Patient ID
+                    path.parts[7],  # Drug
+                    0 if path.parts[8][-1] == "e" else int(path.parts[8][-1]),  # Time
+                    epoch_idx  # Epoch index
+                ]
+                
+                # Compute delta & theta power per fronto-central channel
+                for ch_name in fc_channels:
+                    if ch_name not in epochs_selected.ch_names:
+                        # If channel not present, store NaN
+                        features += [np.nan, np.nan]
+                        continue
 
-                powers.append(temp_power)
+                    ch_idx = epochs_selected.ch_names.index(ch_name)
+                    ch_data = epoch_data[ch_idx]
 
-            # Alpha / Delta ratio (only if Alpha and Delta are valid)
-            if not np.isnan(powers[0]) and not np.isnan(powers[2]) and powers[0] > 0:
-                powers.append(powers[2] / powers[0])
-            else:
-                powers.append(np.nan)  # Invalid ratio if missing data
+                    delta_power = self.bandpower(ch_data, sfreq, [0.5, 4], window_sec=4)
+                    theta_power = self.bandpower(ch_data, sfreq, [4, 8], window_sec=4)
 
-            features += powers
+                    features += [delta_power, theta_power]
 
-            feature_list.append(features)
+                feature_list.append(features)
         
         # ---- Save to file ----
 
-        df = pd.DataFrame(feature_list, columns =['id', 'drug', 'time', 'delta', 'theta', 'alpha', 'ratio'])
+        columns = ["id", "drug", "time", "epoch_idx"]
+        for ch in fc_channels:
+            columns.append(f"delta_{ch}")
+            columns.append(f"theta_{ch}")
+
+        df = pd.DataFrame(feature_list, columns=columns)
         df.to_csv(feature_output_dir / "eeg_features.csv", index=False)
 
 
