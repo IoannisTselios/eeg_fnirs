@@ -233,44 +233,84 @@ class EEGPreprocessor:
     
 
     def create_epochs(self, raw: mne.io.Raw, stats):
-        """Creates epochs from raw EEG data using AutoReject and tracks rejection statistics."""
+        """
+        Slices raw EEG into 1s epochs, assigns labels from overlapping annotations,
+        and applies AutoReject for cleaning. Keeps unlabeled epochs.
+        """
+        from mne import Annotations, Epochs, events_from_annotations
+        from autoreject import AutoReject
+        import numpy as np
 
-        events, event_id = mne.events_from_annotations(raw)
+        annotation_priority = {
+            "Resting": 0,
+            "Familiar voice": 1,
+            "Medical voice": 2
+        }
 
+        sfreq = raw.info["sfreq"]
+        total_duration = raw.times[-1]
+        slice_len = 1.0
+        onsets = []
+        descriptions = []
+
+        for start in np.arange(0, total_duration - slice_len, slice_len):
+            end = start + slice_len
+            best_label = "Unlabeled"
+            best_score = float("inf")
+
+            for annot in raw.annotations:
+                annot_start = annot["onset"]
+                annot_end = annot["onset"] + annot["duration"]
+
+                if annot_start < end and annot_end > start:
+                    label = annot["description"]
+                    if label in annotation_priority:
+                        score = annotation_priority[label]
+                        if score < best_score:
+                            best_label = label
+                            best_score = score
+
+            onsets.append(start)
+            descriptions.append(best_label)
+
+        # ✅ Create new annotations for all 1s windows
+        new_annots = Annotations(
+            onset=onsets,
+            duration=[slice_len] * len(onsets),
+            description=descriptions
+        )
+        raw.set_annotations(new_annots)
+
+        events, event_id = events_from_annotations(raw)
         if len(events) == 0:
             print("❌ No valid EEG events found! Skipping epoch creation.")
-            return None, stats  
+            return None, stats
 
-        print("\n\033[92m🔄 Step 6: Creating epochs WITHOUT rejection...\033[0m")
-        epochs_all = mne.Epochs(
+        print("\n\033[92m🔄 Creating 1s epochs from raw (including unlabeled)...\033[0m")
+        epochs_all = Epochs(
             raw,
-            events,
+            events=events,
             event_id=event_id,
             preload=True,
-            tmin=-self.epoch_size,
-            tmax=self.epoch_size,
-            baseline=(-0.1, 0),
+            tmin=0.0,
+            tmax=1.0,
+            baseline=None,
             reject_by_annotation=False,
-            event_repeated="merge",
+            event_repeated="merge"
         )
 
-        # ✅ Compute max amplitude of each epoch BEFORE rejection
+        # === Amplitude stats before rejection
         all_epoch_amplitudes = np.max(np.abs(epochs_all.get_data()), axis=(1, 2))
-        rejected_epochs_amplitude = all_epoch_amplitudes > self.epoch_rejection_threshold
-
         stats["max_rejected_amp"] = float(np.max(all_epoch_amplitudes))
         stats["avg_removed_amp"] = float(np.mean(all_epoch_amplitudes))
         print(f"   ✅ Max amplitude before rejection: {stats['max_rejected_amp']:.2f} µV")
 
-        # 🧠 Use AutoReject instead of manual rejection
-        print("\n\033[92m🔄 Step 7: Cleaning epochs with AutoReject...\033[0m")
-        ar = AutoReject(thresh_method='bayesian_optimization',
-                        random_state=42,
-                        n_jobs=-1)
+        # === AutoReject cleanup
+        print("\n\033[92m🔄 Cleaning epochs with AutoReject...\033[0m")
+        ar = AutoReject(thresh_method='bayesian_optimization', random_state=42, n_jobs=-1)
         epochs_clean = ar.fit_transform(epochs_all)
         reject_log = ar.get_reject_log(epochs_all)
 
-        # ✅ Rejected epochs and interpolation stats
         stats["rejected_epochs"] = int(np.sum(reject_log.bad_epochs))
         stats["interpolated_epochs"] = int(np.sum(np.any(reject_log.labels == 1, axis=1)))
         stats["interpolated_channels"] = int(np.sum(reject_log.labels))
@@ -283,16 +323,6 @@ class EEGPreprocessor:
             print("⚠️ All epochs removed after AutoReject!")
             logging.warning("⚠️ All epochs removed after AutoReject.")
             return None, stats, len(events)
-
-        print(reject_log.labels.shape)  # (n_epochs, n_channels)
-        
-        # How many epochs had at least 1 interpolated channel?
-        n_epochs_interpolated = np.sum(np.any(reject_log.labels == 1, axis=1))
-
-        # Total interpolated channels:
-        n_total_channels_interpolated = np.sum(reject_log.labels)
-        print(n_epochs_interpolated)
-        print(n_total_channels_interpolated)
 
         return epochs_clean, stats, len(events)
 
@@ -340,13 +370,14 @@ class EEGPreprocessor:
                 except Exception as e:
                     logging.warning(f"⚠️ Failed to set reference: {e}")
 
-                # ✅ Save processed file to target folder
+                # ✅ Create 1s annotations BEFORE saving raw
+                epochs, stats, num_events = self.create_epochs(raw, stats)
+
+                # ✅ Save processed file with updated annotations
                 base_name = os.path.basename(file).replace(".fif", "_preprocessed_raw.fif")
                 target_file = os.path.join(self.TARGET_FOLDER, base_name)
                 raw.save(target_file, overwrite=True)
                 logging.info(f"✅ Saved processed file to: {target_file}")
-
-                epochs, stats, num_events = self.create_epochs(raw, stats)
 
                 # 🚨 CASE 1: If epochs is None, log and skip file immediately
                 if epochs is None:

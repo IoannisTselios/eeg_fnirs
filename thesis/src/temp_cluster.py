@@ -9,7 +9,7 @@ from sklearn.metrics import silhouette_score
 from scipy.signal import savgol_filter
 
 # === Control plot display ===
-show_plots = False
+show_plots = True
 
 # === Load data ===
 csv_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results\\run_20250527_1826\\feature_extraction_files\\eeg_features.csv"

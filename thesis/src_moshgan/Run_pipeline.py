@@ -30,20 +30,20 @@ for sample_size in sample_sizes:
         output_dir = plot_output_dir / "EEG_Outlier_Segments"
         os.makedirs(output_dir, exist_ok=True)
 
-        preprocess = preprocessing_edf.EEGPreprocessor(
-                                        excluded_dir,
-                                        1.0,
-                                        sample_size,
-                                        150,
-                                        ica_threshold,
-                                        root_path,
-                                        preprocessed_output_dir,
-                                        SNR_LOG_PATH,
-                                        epochs_ready_output_dir,
-                                    )
-        preprocess.process()
+        # preprocess = preprocessing_edf.EEGPreprocessor(
+        #                                 excluded_dir,
+        #                                 1.0,
+        #                                 sample_size,
+        #                                 150,
+        #                                 ica_threshold,
+        #                                 root_path,
+        #                                 preprocessed_output_dir,
+        #                                 SNR_LOG_PATH,
+        #                                 epochs_ready_output_dir,
+        #                             )
+        # preprocess.process()
 
-        features = feature_extraction.EEGFeatureExtractor(epochs_ready_output_dir) # epochs_ready_output_dir Path("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250425_0538\\Epochs_files")
+        features = feature_extraction.EEGFeatureExtractor(Path("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250604_2104\\Epochs_files")) # epochs_ready_output_dir Path("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250425_0538\\Epochs_files")
         features.extract_features(feature_output_dir) # feature_output_dir
 
         plots = Violin_plots.EEGVisualizer(feature_output_dir, plot_output_dir) # feature_output_dir, plot_output_dir

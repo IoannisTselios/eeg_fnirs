@@ -31,17 +31,17 @@ for epoch_size in epoch_sizes:
                 os.makedirs(output_dir, exist_ok=True)
 
 
-                # preprocess = Pipeline_preprocess.EEGPreprocessor(excluded_dir, epoch_size, sample_size, epoch_rejection_threshold, ica_threshold, preprocessed_files_dir)
-                # preprocess.process()
+                preprocess = Pipeline_preprocess.EEGPreprocessor(excluded_dir, epoch_size, sample_size, epoch_rejection_threshold, ica_threshold, preprocessed_files_dir)
+                preprocess.process()
 
                 features = Pipeline_feature_extraction.EEGFeatureExtractor()
                 features.extract_features(feature_output_dir) # feature_output_dir
 
-                # plots = Pipeline_violin_plots.EEGVisualizer(feature_output_dir, plot_output_dir) # feature_output_dir, plot_output_dir
-                # plots.process()
+                plots = Pipeline_violin_plots.EEGVisualizer(feature_output_dir, plot_output_dir) # feature_output_dir, plot_output_dir
+                plots.process()
 
-                # backwards_pipeline = Pipeline_backwards.EEGOutlierAnalyzer(root_path, outlier_csv_path, output_dir)
-                # backwards_pipeline.process_outliers()
+                backwards_pipeline = Pipeline_backwards.EEGOutlierAnalyzer(root_path, outlier_csv_path, output_dir)
+                backwards_pipeline.process_outliers()
 
                 # reject_outlier = Reject_outliers.EEGEpochQualityChecker(root_path, outlier_csv_path, rejected_summary)
                 # reject_outlier.process()

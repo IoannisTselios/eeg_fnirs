@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 import mne
 from tqdm import tqdm
-from scipy.integrate import simpson
 from scipy.signal import welch
 
 class EEGFeatureExtractor:
@@ -14,50 +13,10 @@ class EEGFeatureExtractor:
         self.SOURCE_FOLDER = SOURCE_FOLDER
         logging.info("EEG Preprocessor Initialized")
 
-    def bandpower_mne(self, epochs_data, sf, bands):
-        bandpower_dict = {}
-        for low, high, label in bands:
-            band_power = []
-            for channel_data in epochs_data:
-                band_power.append(self.bandpower(channel_data, sf, [low, high]))
-            bandpower_dict[label] = np.mean(band_power)
-        return bandpower_dict
-
-    def bandpower(self, data, sf, band, window_sec=None):
-        band = np.asarray(band, dtype=float)
-        low, high = band
-
-        if window_sec is None:
-            window_sec = 4
-
-        nperseg = min(int(window_sec * sf), len(data))
-        noverlap = nperseg // 2
-
-        freqs, psd = welch(data, sf, nperseg=nperseg, noverlap=noverlap, detrend=False, scaling='density')
-        freq_res = np.mean(np.diff(freqs))
-        idx_band = np.logical_and(freqs >= low, freqs <= high)
-
-        if not np.any(idx_band):
-            raise ValueError(f"No frequency components found in the range {low}-{high} Hz.")
-
-        return simpson(psd[idx_band], dx=freq_res)
-
-    def compute_brain_wave_band_power(self, epochs: mne.Epochs):
-        delta_power = 0
-        theta_power = 0
-        epochs_data = epochs.get_data(copy=False)
-
-        for epoch_id in range(epochs_data.shape[0]):
-            df = self.bandpower_mne(epochs_data[epoch_id] * 1e6,
-                                    sf=float(epochs._raw_sfreq[0]),
-                                    bands=[(0.5, 4, "Delta"), (4, 8, "Theta")])
-            delta_power += np.mean(df['Delta'])
-            theta_power += np.mean(df['Theta'])
-
-        delta_power /= epochs_data.shape[0]
-        theta_power /= epochs_data.shape[0]
-
-        return (delta_power, theta_power)
+    def compute_bandpower(self, data, sf, band):
+        freqs, psd = welch(data, sf, nperseg=2048)
+        idx_band = np.logical_and(freqs >= band[0], freqs <= band[1])
+        return np.trapz(psd[:, idx_band], freqs[idx_band], axis=1)
 
     def extract_features(self, feature_output_dir):
         mne.set_log_level("WARNING")
@@ -68,57 +27,73 @@ class EEGFeatureExtractor:
             logging.error("❌ No FIF files found.")
             return
 
-        feature_list = []
+        bands = {
+            "delta": (0.5, 4),
+            "theta": (4, 8),
+            "alpha": (8, 13),
+            "beta": (13, 30)
+        }
+
+        feature_rows = []
 
         for file in tqdm(fif_files, desc="Processing Files"):
-            logging.info("Current file is {}".format(file))
-            features = []
+            logging.info(f"Current file is {file}")
             file_name = Path(file).stem
-            features.append(file_name)
+            epochs = mne.read_epochs(file, preload=True)
+            print(f"Event IDs for {file_name}: {list(epochs.event_id.keys())}")
 
-            epochs = mne.read_epochs(file)
+            sfreq = epochs.info["sfreq"]
+            ch_names = epochs.info["ch_names"]
 
-            try:
-                epochs_familiar = epochs["Familiar voice"]
-                fam_count = epochs_familiar.selection.shape[0]
-            except KeyError:
-                epochs_familiar, fam_count = None, 0
+            # Segment epochs into resting and stimulus based on annotations
+            rest_epochs = []
+            stim_epochs = []
 
-            try:
-                epochs_medical = epochs["Medical voice"]
-                med_count = epochs_medical.selection.shape[0]
-            except KeyError:
-                epochs_medical, med_count = None, 0
+            for annot in epochs.event_id.keys():
+                if "rest" in annot.lower():
+                    rest_epochs.append(epochs[annot])
+                else:
+                    stim_epochs.append(epochs[annot])
 
-            del epochs
+            # === Remove empty epochs before concatenation ===
+            stim_epochs = [ep for ep in stim_epochs if len(ep) > 0]
 
-            if fam_count == 0 and med_count == 0:
+            if stim_epochs:
+                stim_epochs = mne.concatenate_epochs(stim_epochs)
+            else:
+                # === Use raw from the Epochs object ===
+                try:
+                    raw = epochs._raw
+                    print(f"\n📉 Plotting raw data for: {file}")
+                    raw.plot(n_channels=32, duration=30.0, scalings='auto', title=f"RAW: {Path(file).name}")
+                except Exception as e:
+                    logging.error(f"❌ Failed to plot raw from Epochs for {file}: {e}")
+                
+                logging.warning(f"⚠️ No non-empty stimulus epochs in {file}. Skipping.")
                 continue
 
-            delta_fam, theta_fam = (np.nan, np.nan)
-            delta_med, theta_med = (np.nan, np.nan)
+            # Combine all resting epochs
+            rest_epochs = [ep for ep in rest_epochs if len(ep) > 0]
+            if rest_epochs:
+                rest_epochs = mne.concatenate_epochs(rest_epochs)
+            else:
+                rest_epochs = None
 
-            if fam_count > 0:
-                delta_fam, theta_fam = self.compute_brain_wave_band_power(epochs_familiar)
+            for label, epoch_set in [("resting", rest_epochs), ("stimulus", stim_epochs)]:
+                if epoch_set is None:
+                    continue
 
-            if med_count > 0:
-                delta_med, theta_med = self.compute_brain_wave_band_power(epochs_medical)
+                data = epoch_set.get_data()  # shape (n_epochs, n_channels, n_times)
 
-            delta_diff = delta_fam - delta_med if not np.isnan(delta_fam) and not np.isnan(delta_med) else np.nan
-            theta_diff = theta_fam - theta_med if not np.isnan(theta_fam) and not np.isnan(theta_med) else np.nan
+                for ep_idx in range(data.shape[0]):
+                    row = {"id": file_name, "type": label, "epoch": ep_idx}
+                    for band_name, band_range in bands.items():
+                        bp = self.compute_bandpower(data[ep_idx], sfreq, band_range)
+                        for ch_idx, ch in enumerate(ch_names):
+                            row[f"{band_name}_{ch}"] = bp[ch_idx]
+                    feature_rows.append(row)
 
-            features += [delta_fam, theta_fam, delta_med, theta_med, delta_diff, theta_diff]
-            feature_list.append(features)
-
-        df = pd.DataFrame(feature_list, columns=[
-            'id', 'delta_familiar', 'theta_familiar',
-            'delta_medical', 'theta_medical',
-            'delta_diff', 'theta_diff'
-        ])
+        df = pd.DataFrame(feature_rows)
+        Path(feature_output_dir).mkdir(parents=True, exist_ok=True)
         df.to_csv(Path(feature_output_dir) / "eeg_features.csv", index=False)
         return df
-
-# Dummy path to show usage; replace with actual path when using the class
-# extractor = EEGFeatureExtractor("path_to_fif_files")
-# extractor.extract_features("output_dir")
-
