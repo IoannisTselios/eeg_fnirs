@@ -4,7 +4,7 @@ import mne
 import matplotlib.pyplot as plt
 
 # 📁 Path to the folder containing the FIF files
-folder_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\EDF filer"  # Update this path if needed
+folder_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\EDF filer\\44"  # Update this path if needed
 
 # ✅ Find all .fif files in the folder
 fif_files = glob.glob(os.path.join(folder_path, "*.fif"))

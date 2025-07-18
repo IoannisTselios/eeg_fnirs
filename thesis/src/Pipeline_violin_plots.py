@@ -293,34 +293,34 @@ class EEGVisualizer:
         # normalization(df)  # Normalize the data
         self.general_violin_plots(df, ylabels, "before_outliers")  # Generate general violin plots
         # individual_violin_plots(df)  # Generate violin plots per patient
-        self.outliers_plots(df, ylabels, top_patients)  # Generate outlier patient plots
-        # Step 1: Identify outlier patients
-        outlier_patients = top_patients.unique()  # Get unique patient IDs with highest variability
+        # self.outliers_plots(df, ylabels, top_patients)  # Generate outlier patient plots
+        # # Step 1: Identify outlier patients
+        # outlier_patients = top_patients.unique()  # Get unique patient IDs with highest variability
 
-        # Step 2: Remove outlier patients from the dataset
-        df_no_outliers = df[~df["id"].isin(outlier_patients)]
+        # # Step 2: Remove outlier patients from the dataset
+        # df_no_outliers = df[~df["id"].isin(outlier_patients)]
 
-        # Step 3: Re-run general violin plots without outliers
-        self.general_violin_plots(df_no_outliers, ylabels, "After_the_most_extreme_value")
+        # # Step 3: Re-run general violin plots without outliers
+        # self.general_violin_plots(df_no_outliers, ylabels, "After_the_most_extreme_value")
 
-        df_no_outliers, outlier_stats, outlier_details_df = self.remove_outliers_iqr(df, df.columns)
-        outlier_details_df.to_csv( self.feature_output_dir / "eeg_outliers_detail_df.csv")
+        # df_no_outliers, outlier_stats, outlier_details_df = self.remove_outliers_iqr(df, df.columns)
+        # outlier_details_df.to_csv( self.feature_output_dir / "eeg_outliers_detail_df.csv")
 
-        # Display how many outliers were removed per feature
-        # print("Outliers removed per feature:")
-        # for feature, count in outlier_stats.items():
-            # print(f"Feature: {feature}, Outliers Removed: {count}")
+        # # Display how many outliers were removed per feature
+        # # print("Outliers removed per feature:")
+        # # for feature, count in outlier_stats.items():
+        #     # print(f"Feature: {feature}, Outliers Removed: {count}")
 
-        # print(outlier_details_df.head())
+        # # print(outlier_details_df.head())
 
-        # Show all removed outliers
-        print("Outliers Details:")
-        print(outlier_details_df.to_string())
+        # # Show all removed outliers
+        # print("Outliers Details:")
+        # print(outlier_details_df.to_string())
 
-        # Count how many times each patient appears in the outlier list
-        patient_outlier_counts = outlier_details_df['id'].value_counts()
-        print(patient_outlier_counts)
+        # # Count how many times each patient appears in the outlier list
+        # patient_outlier_counts = outlier_details_df['id'].value_counts()
+        # print(patient_outlier_counts)
 
-        self.general_violin_plots(df_no_outliers, ylabels, "After_removing_multiple_values")
+        # self.general_violin_plots(df_no_outliers, ylabels, "After_removing_multiple_values")
 
-        self.plot_all_outlier_patients(df, outlier_details_df, ylabels, "Deep_Dive_All", use_log_scale=False)
+        # self.plot_all_outlier_patients(df, outlier_details_df, ylabels, "Deep_Dive_All", use_log_scale=False)

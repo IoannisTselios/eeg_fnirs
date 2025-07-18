@@ -18,15 +18,20 @@ import umap.umap_ as umap
 show_plots = True
 
 # === Load new features CSV ===
-csv_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250606_2222\\feature_extraction_files\\eeg_features.csv"
+csv_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250611_1914\\feature_extraction_files\\eeg_features.csv"
 df = pd.read_csv(csv_path)
-
-# === Use only delta and theta features ===
-feature_cols = [col for col in df.columns if col.startswith("delta_") or col.startswith("theta_")]
+# L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\thesis\\src_moshgan\\eeg_features_alpha_theta_entropy_per_channel.csv
+feature_cols = [col for col in df.columns if col.startswith("alpha_") or col.startswith("theta_")]# or col.startswith("spectral_entropy_")]
+print(df[feature_cols].min().min())
 
 # === Log-transform the power features (avoid log(0)) ===
 df_log = df.copy()
-df_log[feature_cols] = np.log10(df_log[feature_cols] + 1e-9)
+# Identify power features (exclude entropy)
+power_cols = [col for col in feature_cols if not col.startswith("spectral_entropy")]
+
+# Apply log10(µV²) transform to power features
+df_log[power_cols] = np.log10(df_log[power_cols] * 1e12 + 1e-20)
+
 
 # === Collect results ===
 summary_results = []
@@ -88,7 +93,7 @@ for patient_id in df_log["id"].unique():
         axes = axes.flatten()
 
         # Plot 1: Log Power Histogram
-        sns.histplot(X_log.values.flatten(), bins=50, kde=True, color="purple", ax=axes[0])
+        sns.histplot(X_log.values.flatten(), bins=50, kde=True, stat="density", color="purple", ax=axes[0])
         axes[0].set_title("Log Power Distribution")
 
         # Plot 2: PCA Cumulative Variance

@@ -44,7 +44,7 @@ for sample_size in sample_sizes:
         # preprocess.process()
 
         features = feature_extraction.EEGFeatureExtractor(Path("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250604_2104\\Epochs_files")) # epochs_ready_output_dir Path("L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250425_0538\\Epochs_files")
-        features.extract_features(feature_output_dir) # feature_output_dir
+        features.extract_features_parallel(feature_output_dir, n_jobs = -1) # feature_output_dir
 
         plots = Violin_plots.EEGVisualizer(feature_output_dir, plot_output_dir) # feature_output_dir, plot_output_dir
         plots.process()

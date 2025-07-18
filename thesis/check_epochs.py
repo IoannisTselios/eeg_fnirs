@@ -4,12 +4,12 @@ from collections import Counter
 import matplotlib.pyplot as plt
 
 # === Path to your epochs FIF file ===
-fif_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250604_2104\\Epochs_files\\02IT-EDF+_mapped_clean-epo.fif"  # <- change this
+fif_path = "L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250604_2104\\Epochs_files\\44TC-EDF+1_mapped_clean-epo.fif"  # <- change this
 # L:\\LovbeskyttetMapper\\CONNECT-ME\\Ioannis\\thesis_code\\results_moshgan\\run_20250604_2104\\Epochs_files\\02IT-EDF+_mapped_clean-epo.fif
 # === Load the epochs ===
 print(f"\n📂 Loading epochs from: {fif_path}")
 epochs = mne.read_epochs(fif_path, preload=True)
-
+epochs.plot(show=True)  # Don't auto-show yet
 # === Basic Info ===
 print("\n✅ Epochs loaded!")
 print(f"📏 Number of epochs: {len(epochs)}")

@@ -347,6 +347,18 @@ class EEGPreprocessor:
                 logging.warning(f" Could not parse identifier from path: {path}")
                 continue
 
+            # ✅ Filter: only process patients with ID >= 43
+            try:
+                patient_label = parts[-4]  # e.g., "Patient ID 43 - U1 (UWS)"
+                patient_id_str = patient_label.split()[2]  # '43' from "Patient ID 43 - ..."
+                if int(patient_id_str) < 30:
+                    logging.info(f"⏭ Skipping {identifier} — Patient ID < 43")
+                    continue
+            except Exception as e:
+                logging.warning(f"❌ Failed to extract patient ID from: {parts[-4]} — {e}")
+                continue
+
+
             if identifier in skip_ids:
                 logging.info(f"⏭ Skipping {identifier} — in skip list")
                 # skipped_files.append(str(path))

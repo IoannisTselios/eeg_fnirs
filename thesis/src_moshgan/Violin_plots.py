@@ -152,16 +152,16 @@ class EEGVisualizer:
             'theta': 'Theta Band Power (4-8 Hz)',
         }
 
-        df_no_outliers, outlier_stats, outlier_details_df = self.remove_outliers_iqr(df, df.columns)
-        outlier_details_df.to_csv(self.feature_output_dir / "eeg_outliers_detail_df.csv", index=False)
+        # df_no_outliers, outlier_stats, outlier_details_df = self.remove_outliers_iqr(df, df.columns)
+        # outlier_details_df.to_csv(self.feature_output_dir / "eeg_outliers_detail_df.csv", index=False)
 
         print(f"Number of data points: {len(df)}")
         print("Outliers loaded:")
-        print(outlier_details_df[['id', 'Feature']])
+        # print(outlier_details_df[['id', 'Feature']])
 
         self.basic_statistics(df)
-        self.general_violin_plots(df, ylabels, outlier_details_df, name="before_outliers")
-        self.plot_histograms(df, ylabels, outlier_details_df)
-        self.plot_correlation(df, outlier_details_df)
+        self.general_violin_plots(df, ylabels, outlier_details_df = [], name="before_outliers")
+        self.plot_histograms(df, ylabels, outlier_details_df = [])
+        self.plot_correlation(df, outlier_details_df = [])
 
         print(f"✅ All plots saved in {self.plot_output_dir}")

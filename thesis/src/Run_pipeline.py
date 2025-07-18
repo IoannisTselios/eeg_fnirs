@@ -31,8 +31,8 @@ for epoch_size in epoch_sizes:
                 os.makedirs(output_dir, exist_ok=True)
 
 
-                preprocess = Pipeline_preprocess.EEGPreprocessor(excluded_dir, epoch_size, sample_size, epoch_rejection_threshold, ica_threshold, preprocessed_files_dir)
-                preprocess.process()
+                # preprocess = Pipeline_preprocess.EEGPreprocessor(excluded_dir, epoch_size, sample_size, epoch_rejection_threshold, ica_threshold, preprocessed_files_dir)
+                # preprocess.process()
 
                 features = Pipeline_feature_extraction.EEGFeatureExtractor()
                 features.extract_features(feature_output_dir) # feature_output_dir
